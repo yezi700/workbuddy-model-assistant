@@ -1,0 +1,76 @@
+{
+  "name": "workbuddy-model-assistant",
+  "productName": "WorkBuddy 模型助手",
+  "version": "1.0.0",
+  "description": "WorkBuddy / CodeBuddy 本机模型管理与 OpenAI 兼容代理桌面应用",
+  "private": true,
+  "type": "module",
+  "main": "desktop/main.cjs",
+  "license": "MIT",
+  "author": "yezi700",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yezi700/workbuddy-model-assistant.git"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "electron .",
+    "start:proxy": "node server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "dist": "electron-builder --win nsis portable --x64 --publish never",
+    "dist:dir": "electron-builder --win --dir --x64 --publish never"
+  },
+  "devDependencies": {
+    "electron": "44.7.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "io.github.yezi700.workbuddy-model-assistant",
+    "productName": "WorkBuddy 模型助手",
+    "directories": {
+      "output": "dist",
+      "buildResources": "desktop/assets"
+    },
+    "files": [
+      "desktop/**/*",
+      "src/**/*",
+      "console/**/*",
+      "server.mjs",
+      "package.json",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "desktop/assets/icon.ico",
+      "signExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "WorkBuddy 模型助手",
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "WorkBuddy-Model-Assistant-Setup-${version}-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "WorkBuddy-Model-Assistant-Portable-${version}-${arch}.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "yezi700",
+        "repo": "workbuddy-model-assistant",
+        "releaseType": "release"
+      }
+    ]
+  }
+}

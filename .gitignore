@@ -1,0 +1,15 @@
+node_modules/
+dist/
+config.json
+auth*.json
+usage.json
+.login-state.json
+*.log
+*.bak*
+*.zip
+*.exe
+desktop-smoke*.json
+desktop-smoke*.png
+.env*
+!.env.example
+coverage/

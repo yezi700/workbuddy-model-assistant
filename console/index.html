@@ -1,0 +1,1077 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>WorkBuddy 模型助手</title>
+<script>
+  // 首屏防闪烁：在样式解析前就把主题定下来，避免深色用户看到一瞬白屏
+  (function () {
+    try {
+      var t = localStorage.getItem('wb-theme');
+      if (t !== 'light' && t !== 'dark') {
+        t = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      }
+      document.documentElement.dataset.theme = t;
+    } catch (e) {
+      document.documentElement.dataset.theme = 'dark';
+    }
+  })();
+</script>
+<style>
+  /* ============================================================
+     设计令牌：两套主题共用同一组语义变量，切换 data-theme 即可换肤
+     层级按「底 → 面板 → 凹陷区」三级，配合描边与阴影拉开纵深
+     ============================================================ */
+  :root {
+    --r-sm: 6px; --r-md: 9px; --r-lg: 13px; --r-full: 999px;
+    --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 22px; --sp-6: 30px;
+    --fz-xs: 11px; --fz-sm: 12px; --fz-md: 13px; --fz-lg: 15px; --fz-xl: 19px;
+    --mono: ui-monospace, "SF Mono", Consolas, "Cascadia Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+    --t-fast: 120ms cubic-bezier(.4, 0, .2, 1);
+  }
+
+  /* ---------- 深色主题 ---------- */
+  html[data-theme="dark"] {
+    --bg: #0b0d11;          /* 页面底 */
+    --surface: #14171e;     /* 面板 */
+    --surface-2: #1b1f28;   /* 面板内的次级块 */
+    --sunken: #0d1015;      /* 凹陷区（代码 / 日志 / 输入框） */
+    --hover: #1f242e;
+    --line: #262b36;        /* 主描边 */
+    --line-soft: #1e222b;   /* 弱描边（表格行分隔） */
+    --fg: #e8ebf1;
+    --fg-2: #aab2c2;
+    --fg-3: #838d9f;
+    --accent: #5b8cff;
+    --accent-fg: #fff;
+    --accent-soft: rgba(91, 140, 255, .14);
+    --ok: #35d07f; --ok-soft: rgba(53, 208, 127, .13);
+    --warn: #f0a92e; --warn-soft: rgba(240, 169, 46, .13);
+    --bad: #ff6b6b; --bad-soft: rgba(255, 107, 107, .13);
+    --req: #7fc0ff;
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, .4);
+    --shadow-2: 0 4px 16px -4px rgba(0, 0, 0, .55);
+    --bar-top: #6f9dff; --bar-bot: #2f57b8;
+    --scroll: #333a47;
+  }
+
+  /* ---------- 浅色主题 ---------- */
+  html[data-theme="light"] {
+    --bg: #f4f6fa;
+    --surface: #ffffff;
+    --surface-2: #f7f9fc;
+    --sunken: #f2f5f9;
+    --hover: #f2f5fa;
+    --line: #dde3ec;
+    --line-soft: #eaeef4;
+    --fg: #1a1f2b;
+    --fg-2: #4a5464;
+    --fg-3: #646f82;
+    --accent: #2f6bff;
+    --accent-fg: #fff;
+    --accent-soft: rgba(47, 107, 255, .09);
+    --ok: #0b7a44; --ok-soft: rgba(11, 122, 68, .11);
+    --warn: #8a5200; --warn-soft: rgba(138, 82, 0, .11);
+    --bad: #b81f1f; --bad-soft: rgba(184, 31, 31, .1);
+    --req: #1f6feb;
+    --shadow-1: 0 1px 2px rgba(16, 24, 40, .05);
+    --shadow-2: 0 4px 14px -4px rgba(16, 24, 40, .1);
+    --bar-top: #5b8cff; --bar-bot: #2f6bff;
+    --scroll: #c6cedb;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: var(--fz-md)/1.6 var(--sans);
+    -webkit-font-smoothing: antialiased;
+    transition: background var(--t-fast), color var(--t-fast);
+  }
+  ::selection { background: var(--accent-soft); }
+  /* 统一细滚动条，避免深色下出现刺眼的系统滚动条 */
+  * { scrollbar-width: thin; scrollbar-color: var(--scroll) transparent; }
+  *::-webkit-scrollbar { width: 10px; height: 10px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb { background: var(--scroll); border-radius: var(--r-full); border: 3px solid transparent; background-clip: content-box; }
+  *::-webkit-scrollbar-thumb:hover { background: var(--fg-3); background-clip: content-box; }
+
+  /* ---------- 顶栏 ---------- */
+  header {
+    display: flex; align-items: center; gap: var(--sp-3);
+    padding: 0 var(--sp-5); height: 58px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface);
+    position: sticky; top: 0; z-index: 20;
+    box-shadow: var(--shadow-1);
+  }
+  header h1 { font-size: var(--fz-lg); margin: 0; font-weight: 650; letter-spacing: -.01em; white-space: nowrap; }
+  .brand { display: flex; align-items: center; gap: var(--sp-2); }
+  .logo {
+    width: 24px; height: 24px; border-radius: var(--r-sm); flex: none;
+    background: linear-gradient(135deg, var(--bar-top), var(--bar-bot));
+    display: grid; place-items: center; color: #fff;
+    font-size: var(--fz-xs); font-weight: 700; letter-spacing: .02em;
+  }
+  header .meta { font-size: var(--fz-sm); color: var(--fg-3); white-space: nowrap; }
+  header .defmodel {
+    font-size: var(--fz-sm); color: var(--fg-2);
+    background: var(--surface-2); border: 1px solid var(--line);
+    padding: 3px 10px; border-radius: var(--r-full);
+    max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  header .defmodel b { color: var(--fg); font-weight: 650; }
+  .grow { flex: 1; }
+
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-3); display: inline-block; flex: none; }
+  .dot.on { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+  .dot.off { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-soft); }
+  .muted { color: var(--fg-3); }
+
+  /* ---------- 导航 ---------- */
+  nav {
+    display: flex; gap: 2px; padding: var(--sp-3) var(--sp-5) 0;
+    flex-wrap: wrap; max-width: 1240px; margin: 0 auto;
+  }
+  nav button {
+    background: transparent; border: 1px solid transparent; color: var(--fg-2);
+    padding: 7px 14px; border-radius: var(--r-md); cursor: pointer;
+    font-size: var(--fz-md); font-weight: 500;
+    transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+  }
+  nav button:hover { background: var(--surface); color: var(--fg); border-color: var(--line-soft); }
+  nav button.active {
+    background: var(--surface); color: var(--fg); border-color: var(--line);
+    font-weight: 600; box-shadow: var(--shadow-1);
+  }
+  nav button.active::before {
+    content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent); margin-right: 7px; vertical-align: 1px;
+  }
+
+  main { padding: var(--sp-4) var(--sp-5) 64px; max-width: 1240px; margin: 0 auto; }
+
+  /* ---------- 卡片 ---------- */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: var(--sp-3); }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    padding: var(--sp-4) var(--sp-4) var(--sp-3);
+    box-shadow: var(--shadow-1);
+  }
+  .card h3 {
+    margin: 0 0 var(--sp-3); font-size: var(--fz-md); font-weight: 600;
+    display: flex; align-items: center; gap: var(--sp-2);
+    padding-bottom: var(--sp-3); border-bottom: 1px solid var(--line-soft);
+    letter-spacing: -.005em;
+  }
+  .card h3 .spacer { flex: 1; }
+
+  /* 键值行：标签弱化、数值加重，形成清晰的两列节奏 */
+  .kv {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: var(--sp-3); padding: 5px 0; font-size: var(--fz-md);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .kv:last-child { border-bottom: 0; }
+  .kv > span:first-child { color: var(--fg-3); flex: none; }
+  .kv > span:last-child { text-align: right; overflow-wrap: anywhere; }
+  .kv b { font-weight: 650; }
+
+  .code {
+    font-family: var(--mono); background: var(--sunken);
+    border: 1px solid var(--line); border-radius: var(--r-md);
+    padding: 9px 12px; font-size: var(--fz-sm); word-break: break-all;
+    color: var(--fg); line-height: 1.55;
+  }
+
+  /* ---------- 表格 ---------- */
+  .table-wrap {
+    overflow: auto; border: 1px solid var(--line);
+    border-radius: var(--r-md); background: var(--surface);
+  }
+  table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: var(--fz-md); }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
+  th {
+    color: var(--fg-3); font-weight: 600; font-size: var(--fz-sm);
+    text-transform: uppercase; letter-spacing: .04em;
+    position: sticky; top: 0; z-index: 2;
+    background: var(--surface-2); border-bottom: 1px solid var(--line);
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr { transition: background var(--t-fast); }
+  tbody tr:hover td { background: var(--hover); }
+  td code { font-family: var(--mono); font-size: var(--fz-sm); color: var(--fg); }
+
+  /* ---------- 标签 ---------- */
+  .pill {
+    display: inline-block; padding: 2px 9px; border-radius: var(--r-full);
+    font-size: var(--fz-xs); font-weight: 550; line-height: 1.6;
+    border: 1px solid var(--line); color: var(--fg-2); background: var(--surface-2);
+    white-space: nowrap;
+  }
+  .pill.free { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+  .pill.paid { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+  .pill.ok { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+  .pill.bad { color: var(--bad); background: var(--bad-soft); border-color: transparent; }
+  .pill.warn { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+
+  /* ---------- 账号池 ---------- */
+  .acct-list { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+  .acct {
+    border: 1px solid var(--line); border-radius: var(--r-md);
+    padding: 9px 11px; background: var(--surface-2);
+    transition: border-color var(--t-fast);
+  }
+  .acct:hover { border-color: var(--fg-3); }
+  .acct-off { opacity: 0.55; }
+  .acct-head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+  .acct-name { font-weight: 600; font-size: var(--fz-md); }
+  .acct-meta { color: var(--fg-3); font-size: var(--fz-xs); margin-top: 5px; }
+  .acct-err {
+    color: var(--bad); font-size: var(--fz-xs); margin-top: 4px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .acct-ops { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .btn.mini { padding: 3px 9px; font-size: var(--fz-xs); border-radius: var(--r-sm); }
+
+  /* ---------- 按钮 ---------- */
+  button { font: inherit; }
+  .btn {
+    background: var(--surface-2); border: 1px solid var(--line); color: var(--fg);
+    padding: 6px 13px; border-radius: var(--r-md); cursor: pointer;
+    font-size: var(--fz-md); font-weight: 500;
+    transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast), transform var(--t-fast);
+  }
+  .btn:hover { border-color: var(--fg-3); background: var(--hover); }
+  .btn:active { transform: translateY(1px); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  .btn.primary:hover { filter: brightness(1.08); border-color: var(--accent); }
+  .btn.danger { color: var(--bad); border-color: var(--line); }
+  .btn.danger:hover { background: var(--bad-soft); border-color: var(--bad); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  /* 键盘焦点必须可见（原来 outline 用了正文色，等于没有） */
+  .btn:focus-visible, nav button:focus-visible, input:focus-visible, select:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  .icon-btn { padding: 6px 9px; line-height: 1; }
+
+  input, select {
+    background: var(--sunken); border: 1px solid var(--line); color: var(--fg);
+    border-radius: var(--r-md); padding: 7px 11px; font: inherit; font-size: var(--fz-md);
+    transition: border-color var(--t-fast), background var(--t-fast);
+  }
+  input::placeholder { color: var(--fg-3); }
+  input:hover, select:hover { border-color: var(--fg-3); }
+  input:focus, select:focus { border-color: var(--accent); background: var(--surface); outline: none; }
+
+  .row { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
+
+  /* ---------- 日志 ---------- */
+  #logs {
+    background: var(--sunken); border: 1px solid var(--line); border-radius: var(--r-md);
+    padding: var(--sp-3); height: 460px; overflow: auto;
+    font-family: var(--mono); font-size: var(--fz-sm); line-height: 1.7; white-space: pre-wrap;
+    word-break: break-word;
+  }
+  #logs > div { padding: 1px 0; }
+  .lv-warn { color: var(--warn); }
+  .lv-error { color: var(--bad); }
+  .lv-req { color: var(--req); }
+  .lv-info { color: var(--fg-3); }
+
+  /* ---------- 柱状图 ---------- */
+  .bars { display: flex; gap: var(--sp-2); align-items: flex-end; height: 120px; margin: var(--sp-5) 0 var(--sp-5); }
+  .bar {
+    flex: 1; min-height: 4px; position: relative; cursor: default;
+    background: linear-gradient(180deg, var(--bar-top), var(--bar-bot));
+    border-radius: var(--r-sm) var(--r-sm) 0 0;
+    transition: filter var(--t-fast);
+  }
+  .bar:hover { filter: brightness(1.15); }
+  .bar b { position: absolute; top: -19px; left: 50%; transform: translateX(-50%); font-size: var(--fz-xs); color: var(--fg-2); font-weight: 600; }
+  .bar i { position: absolute; bottom: -21px; left: 50%; transform: translateX(-50%); font-size: var(--fz-xs); color: var(--fg-3); font-style: normal; }
+
+  .hint { font-size: var(--fz-sm); color: var(--fg-3); margin: var(--sp-2) 0 0; line-height: 1.65; }
+  .hint code { font-family: var(--mono); font-size: var(--fz-sm); background: var(--surface-2); padding: 1px 5px; border-radius: 4px; color: var(--fg-2); }
+  .hint b { color: var(--fg-2); font-weight: 600; }
+  .hidden { display: none !important; }
+
+  .spin {
+    display: inline-block; width: 12px; height: 12px;
+    border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%;
+    animation: s .7s linear infinite; vertical-align: -2px;
+  }
+  @keyframes s { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
+
+  /* 小屏适配 */
+  @media (max-width: 720px) {
+    header { height: auto; padding: var(--sp-3) var(--sp-4); flex-wrap: wrap; gap: var(--sp-2); }
+    header .defmodel { max-width: 100%; }
+    nav, main { padding-left: var(--sp-4); padding-right: var(--sp-4); }
+    main { padding-bottom: 40px; }
+  }
+  .route-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+  .route-grid label { display:flex; flex-direction:column; gap:7px; color:var(--fg-2); }
+  .route-grid input, .route-grid select { width:100%; min-width:0; box-sizing:border-box; }
+  select { background:var(--sunken); color:var(--fg); border:1px solid var(--line); border-radius:var(--r-md); padding:8px; }
+  .route-checks { display:flex; flex-wrap:wrap; gap:14px; margin:12px 0; }
+  .route-checks label { display:flex; align-items:center; gap:6px; }
+  .route-checks input { width:auto; }
+  .route-summary { margin:12px 0; overflow-wrap:anywhere; }
+  #routeMessage { white-space:pre-wrap; overflow-wrap:anywhere; }
+  @media(max-width:600px) { .route-grid { grid-template-columns:1fr; } nav { flex-wrap:wrap; } }
+  .welcome-line { display:flex; align-items:center; justify-content:space-between; gap:18px; margin:4px 0 18px; }
+  .eyebrow { color:var(--fg-3); font-size:12px; }
+  .welcome-line h2 { font-size:25px; line-height:1.4; margin:4px 0 6px; letter-spacing:-.02em; }
+  .welcome-line p { color:var(--fg-2); margin:0; }
+  .current-choice { background:var(--surface); border:1px solid var(--line); border-left:4px solid var(--accent); border-radius:var(--r-md); padding:18px 20px; }
+  .current-choice strong { font-size:19px; }
+  .current-choice .choice-meta { display:flex; flex-wrap:wrap; gap:8px 22px; color:var(--fg-2); margin-top:8px; }
+  .setup-steps { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:18px 0 28px; }
+  .setup-steps button { display:flex; align-items:center; text-align:left; gap:10px; padding:13px; border:1px solid var(--line); border-radius:var(--r-md); background:var(--surface); color:var(--fg); cursor:pointer; }
+  .setup-steps button:hover { border-color:var(--accent); background:var(--accent-soft); }
+  .setup-steps b { display:block; font-size:13px; }
+  .setup-steps small { display:block; color:var(--fg-3); margin-top:3px; font-size:11px; }
+  .step-num { background:var(--accent-soft); color:var(--accent); width:28px; height:28px; border-radius:50%; display:grid; place-items:center; flex-shrink:0; font-weight:700; }
+  .section-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:0 0 12px; }
+  .section-heading h3 { margin:0; font-size:17px; }
+  .quick-models { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
+  .quick-model { display:flex; flex-direction:column; padding:18px; min-width:0; }
+  .quick-model.selected { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent-soft); }
+  .quick-model h4 { font-size:17px; margin:0 0 8px; }
+  .quick-model .description { color:var(--fg-2); margin:8px 0 16px; min-height:40px; }
+  .quick-model .model-facts { padding:12px 0; border-top:1px solid var(--line-soft); margin-bottom:12px; flex:1; }
+  .quick-model .model-facts p { margin:5px 0; color:var(--fg-2); overflow-wrap:anywhere; }
+  .quick-model .btn { width:100%; padding:10px; }
+  .home-message { min-height:24px; margin:12px 0 16px; color:var(--accent); }
+  .connect-row { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:14px 0; border-bottom:1px solid var(--line-soft); }
+  .connect-row>div { display:flex; flex-direction:column; gap:5px; min-width:0; }
+  .connect-row code { color:var(--accent); font:13px var(--mono); overflow-wrap:anywhere; }
+  .connect-row .btn { flex-shrink:0; }
+  .helper-details { margin-top:16px; }
+  .helper-details summary { cursor:pointer; color:var(--fg-2); font-weight:600; padding:6px 0; }
+  .helper-details[open]>summary { margin-bottom:12px; }
+  .rule-facts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin:14px 0; color:var(--fg-2); }
+  .rule-facts b { display:block; font-weight:500; color:var(--fg-3); margin-bottom:3px; }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+  @media(max-width:900px) { .quick-models { grid-template-columns:1fr; } .setup-steps { gap:8px; } header { flex-wrap:wrap; height:auto; } }
+  @media(max-width:600px) { .welcome-line { align-items:flex-start; flex-direction:column; gap:10px; } .welcome-line h2 {font-size:22px;} .setup-steps { grid-template-columns:1fr; } .setup-steps small {font-size:12px;} .rule-facts {grid-template-columns:1fr;} .connect-row {align-items:flex-start;} nav button {padding:7px 10px;} }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">
+    <span class="logo">WB</span>
+    <h1>WorkBuddy 模型助手</h1>
+  </span>
+  <span class="dot" id="health" title="站点登录状态"></span>
+  <span class="meta" id="verline"></span>
+  <span class="grow"></span>
+  <span class="defmodel" id="defmodel" title="客户端填 model=default 时实际使用的模型"></span>
+  <button class="btn icon-btn" id="themeBtn" onclick="toggleTheme()" title="切换深色 / 浅色主题" aria-label="切换主题">🌙</button>
+  <button class="btn" onclick="location.reload()" title="重新加载页面">刷新</button>
+</header>
+
+<nav>
+  <button data-tab="overview" class="active">开始使用</button>
+  <button data-tab="models">更多模型</button>
+  <button data-tab="routing">使用规则</button>
+  <button data-tab="usage">用量统计</button>
+  <button data-tab="logs">排查问题</button>
+  <button data-tab="accounts">登录账号</button>
+  <button data-tab="service">服务设置</button>
+</nav>
+
+<main>
+  <!-- 总览 -->
+  <section id="tab-overview">
+    <div class="welcome-line"><div><span class="eyebrow">本机服务 · 个人账号</span><h2>选好模型，就可以开始了</h2><p>这里负责连接你的账号。聊天仍在 Trae、Cherry Studio 等客户端里进行。</p></div><span class="pill ok" id="readyBadge">正在读取状态…</span></div>
+    <div id="currentChoice" class="current-choice" aria-live="polite">正在读取当前模型…</div>
+    <div class="setup-steps">
+      <button onclick="showTab('accounts')"><span class="step-num">1</span><span><b>登录你的账号</b><small id="loginStep">查看国内版与国际版登录状态</small></span><span>→</span></button>
+      <button onclick="document.getElementById('quickModels').scrollIntoView({behavior:'smooth',block:'center'})"><span class="step-num">2</span><span><b>选择要用的模型</b><small>点击下方“使用这个模型”</small></span><span>↓</span></button>
+      <button onclick="document.getElementById('connectionCard').scrollIntoView({behavior:'smooth',block:'start'})"><span class="step-num">3</span><span><b>连接聊天客户端</b><small>复制下方地址、密钥和模型名</small></span><span>↓</span></button>
+    </div>
+    <div class="section-heading"><h3>你的常用模型</h3><button class="btn" onclick="showTab('models')">查看其他模型 →</button></div>
+    <div class="quick-models" id="quickModels"></div>
+    <p id="homeMessage" class="home-message" role="status" aria-live="polite"></p>
+    <div class="card" id="connectionCard">
+      <h3>把这三项填进聊天客户端</h3>
+      <p class="hint">在客户端添加“OpenAI 兼容 / 自定义模型”。填好一次，以后在本页更换模型即可。</p>
+      <div class="connect-row"><div><b>① API 地址（Base URL）</b><code id="baseUrl"></code></div><button class="btn" onclick="copyConnection('base')">复制地址</button></div>
+      <div class="connect-row"><div><b>② API 密钥（API Key）</b><span id="apiKey">密钥已保存在本机，点击右侧按钮复制</span></div><button class="btn" onclick="copyConnection('key')">复制密钥</button></div>
+      <div class="connect-row"><div><b>③ 模型名称 / 模型 ID</b><code>default</code><span class="hint">照填 default，它会跟随你在上方选择的模型。</span></div><button class="btn" onclick="copyConnection('model')">复制模型名</button></div>
+      <details class="helper-details"><summary>TraeWork 要求“完整 URL”，该填哪个？</summary><p>开启“完整 URL”时复制下面的完整地址；关闭时使用上面的 API 地址。</p><div class="connect-row"><code id="fullUrl"></code><button class="btn" onclick="copyConnection('full')">复制完整地址</button></div></details>
+      <p id="copyMessage" class="hint" role="status" aria-live="polite"></p>
+    </div>
+    <details class="helper-details"><summary>查看账号状态与详细信息</summary><div class="cards" id="siteCards" style="margin-top:12px"></div></details>
+  </section>
+
+  <!-- 模型 -->
+  <section id="tab-models" class="hidden">
+    <div class="card">
+      <div class="row">
+        <b>当前选择：</b><span id="curDefault" class="pill ok"></span>
+        <span class="grow"></span>
+        <input id="modelFilter" placeholder="搜索模型 ID / 名称" style="width:220px" oninput="renderModels()" />
+        <button class="btn" id="probeBtn" onclick="probeVisible()">检查这些模型（可能消耗额度）</button>
+      </div>
+      <p class="hint">一个模型可能在多个账号渠道出现。“使用该渠道”会固定到该行渠道；“调整使用规则”可以设置失败后换到哪里。带 <span class="pill free">免费</span> 的是官方目录标注免费。<br>
+      注意：目录来自各站点实时接口，国际版控制台接口不稳定时会用内置清单兜底，因此个别模型可能标了「未探测」。</p>
+      <div class="table-wrap" style="max-height:62vh"><table id="modelTable"><thead><tr>
+        <th>模型名称</th><th>账号渠道</th><th>费用信息</th><th>可处理长度</th><th>模型说明</th><th>检查结果</th><th></th>
+      </tr></thead><tbody></tbody></table></div>
+    </div>
+  </section>
+
+  <section id="tab-routing" class="hidden">
+    <div class="card">
+      <h3>模型从哪里调用，失败后怎么办</h3>
+      <p class="hint">日常使用只需在首页选模型。这里可以查看使用哪个账号渠道、失败后如何处理；需要调整时，点击对应模型的“修改规则”。</p>
+      <div class="row"><button class="btn" onclick="editRoute()">新增规则</button><button class="btn" onclick="routePreset('hy4')">配置 Hy4 夜间</button><button class="btn" onclick="routePreset('deepseek')">配置国际 WorkBuddy DeepSeek</button><button class="btn" onclick="routePreset('step')">配置 Step 双站点</button></div>
+      <div id="routeList" class="route-summary"></div>
+    </div>
+    <details class="card helper-details" id="routeEditor" style="margin-top:12px"><summary>调整模型规则（高级设置）</summary>
+      <h3 style="margin-top:14px">编辑规则</h3>
+      <div class="route-grid">
+        <label>模型 ID（使用准确的上游 ID）<input id="routeModel" list="routeModelIds" placeholder="例如 hy4-preview" /><datalist id="routeModelIds"></datalist></label>
+        <label>优先使用的账号渠道<select id="routeSite"></select></label>
+        <label>当前渠道失败时<select id="routeMode"><option value="off">不跨站点，失败后提示</option><option value="freeOnly">仅切到目录确认免费的备用站点</option><option value="listed">允许切到所选备用站点（可能收费）</option></select></label>
+        <label>不在允许时间内时<select id="routeOutside"><option value="block">暂停调用，避免时段外扣费</option><option value="base">使用首选站点</option></select></label>
+        <label>时段开始（北京时间）<input id="routeStart" type="time" /></label>
+        <label>时段结束（北京时间）<input id="routeEnd" type="time" /></label>
+        <label>活动开始日期<input id="routeStartDate" type="date" /></label>
+        <label>活动最后一晚日期<input id="routeEndDate" type="date" /></label>
+        <label>夜间使用的账号渠道<select id="routeNightSite"></select></label>
+      </div>
+      <div class="route-checks"><label><input id="routeEnabled" type="checkbox" checked />启用规则</label><label><input id="routeSchedule" type="checkbox" />启用时段（支持跨午夜）</label><label><input id="routeFree" type="checkbox" />价格不明确时也暂停（严格免费检查）</label></div>
+      <b>失败后可以尝试哪些渠道（按顺序）</b><div class="route-checks" id="routeFallbacks"></div>
+      <p class="hint">免费判断依据上游目录零倍率；内置清单的未知价格不会当作免费。夜间日期按开始的晚间计算，最后一晚延续到次日结束时间。免费活动可能变化，目录判断不能保证上游实际扣费为零。保存规则立即生效；预览只解析路由，不发送对话。</p>
+      <div class="row"><button class="btn primary" onclick="saveRoute()">保存规则</button><button class="btn" onclick="previewRoute()">预览已保存路由</button></div>
+      <div id="routeMessage" role="status" aria-live="polite" class="hint"></div>
+    </details>
+    <details class="card helper-details" style="margin-top:12px"><summary>调整自动换号与备用渠道（高级设置）</summary>
+      <h3 style="margin-top:14px">账号与站点切换</h3>
+      <div class="route-grid"><label>失败时最多尝试几个账号<input id="poolMax" type="number" min="1" max="20" value="3" /></label><label>未配置模型规则时的当前渠道失败时<select id="globalRouteMode"><option value="freeOnly">只切到目录确认免费的站点</option><option value="off">不跨站点</option><option value="listed">允许已登录且有同模型的站点（可能收费）</option></select></label></div>
+      <div class="route-checks"><label><input id="poolSwitch" type="checkbox" checked />账号额度不足后允许尝试备用站点</label></div>
+      <p class="hint">先在「账号登录」给同一站点添加多个账号。每次请求先尝试该站点账号池，再按模型规则尝试备用站点。不会把不同模型当作同一模型替换。</p>
+      <button class="btn" onclick="savePoolOptions()">保存切换设置</button>
+    </details>
+  </section>
+
+  <!-- 用量 -->
+  <section id="tab-usage" class="hidden">
+    <div class="cards" id="usageCards"></div>
+    <div class="card" style="margin-top:12px">
+      <h3>最近 7 天调用</h3>
+      <div class="bars" id="usageBars"></div>
+      <div style="height:24px"></div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <h3>按模型排行</h3>
+      <div class="table-wrap"><table id="usageTable"><thead><tr>
+        <th>模型</th><th>站点</th><th>调用</th><th>失败</th><th>入 token</th><th>出 token</th><th>消耗 credit</th>
+      </tr></thead><tbody></tbody></table></div>
+      <div class="row" style="margin-top:10px"><button class="btn danger" onclick="resetUsage()">清空统计</button></div>
+    </div>
+  </section>
+
+  <!-- 日志 -->
+  <section id="tab-logs" class="hidden">
+    <div class="card">
+      <div class="row"><b>实时日志</b>
+        <span class="muted">（内存缓冲最近 500 条，自动刷新）</span>
+        <span class="grow"></span>
+        <label class="muted"><input type="checkbox" id="autoScroll" checked /> 自动滚动</label>
+        <button class="btn" onclick="document.getElementById('logs').textContent=''">清屏</button>
+      </div>
+      <div id="logs"></div>
+    </div>
+  </section>
+
+  <!-- 账号 -->
+  <section id="tab-accounts" class="hidden">
+    <div class="cards" id="accountCards"></div>
+    <div class="card hidden" id="loginBox" style="margin-top:12px">
+      <h3>完成授权</h3>
+      <p class="hint">在浏览器打开下面的链接登录（国际版可在页面直接注册），然后点「我已完成授权」。</p>
+      <div class="code" id="loginUrl"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn primary" onclick="openLoginUrl()">打开授权链接</button>
+        <button class="btn" onclick="copyText(document.getElementById('loginUrl').textContent)">复制链接</button>
+        <button class="btn" onclick="pollLogin()">我已完成授权</button>
+        <span id="loginMsg" class="muted"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 服务 -->
+  <section id="tab-service" class="hidden">
+    <div class="card hidden" id="desktopPanel" style="margin-bottom:16px">
+      <h3>桌面应用</h3>
+      <p class="hint">关闭窗口会收起到任务栏托盘，代理继续运行。需要完全关闭时，选择“退出应用并停止服务”。</p>
+      <div class="route-checks"><label><input type="checkbox" id="desktopStartup" />开机自动启动模型助手</label></div>
+      <div class="row"><button class="btn" id="desktopImport">导入旧代理的配置和账号</button><button class="btn" id="desktopData">打开数据目录</button><button class="btn" id="desktopRestart">重启代理服务</button><button class="btn danger" id="desktopQuit">退出应用并停止服务</button></div>
+      <p class="hint" id="desktopMessage" role="status" aria-live="polite"></p>
+    </div>
+    <div class="card">
+      <h3>本机服务信息</h3>
+      <div class="kv"><span>版本 / Node</span><span id="svcVer"></span></div>
+      <div class="kv"><span>运行时长</span><span id="svcUp"></span></div>
+      <div class="kv"><span>监听</span><span id="svcHost"></span></div>
+      <div class="kv"><span>默认账号渠道</span><span id="svcSite"></span></div>
+      <div class="row" style="margin-top:14px">
+        <button class="btn danger" onclick="stopService()">停止服务</button>
+        <span class="muted">停止后需用桌面快捷方式或 start.cmd 重新启动</span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+const TOKEN = window.__WB_TOKEN__ || '';
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+async function api(path, opts = {}) {
+  const res = await fetch('/console/api' + path, {
+    ...opts,
+    headers: { 'X-Console-Token': TOKEN, 'Content-Type': 'application/json', ...(opts.headers || {}) },
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  const text = await res.text();
+  let json = null;
+  try { json = JSON.parse(text); } catch { json = { raw: text }; }
+  if (!res.ok) {
+    const err = new Error(json.error || ('HTTP ' + res.status));
+    // 把后端标记（如 need_token）带到 Error 上，便于调用方分支处理
+    if (json.need_token) err.needToken = true;
+    if (json.hint) err.hint = json.hint;
+    throw err;
+  }
+  return json;
+}
+
+let STATE = null, MODELS = null, ALIASES = {}, loginSite = null;
+
+const friendlySite = id => ({'cn-cli':'国内版','intl-cli':'国际版 CodeBuddy','intl-work':'国际版 WorkBuddy'}[id] || id || '尚未确定');
+const friendlyModel = id => ({'hy4-preview':'Hy4 Preview','deepseek-v4.1-flash':'DeepSeek V4.1','step-5-preview':'Step-5 Preview'}[id] || id || '尚未选择');
+function showTab(name) { document.querySelector(`nav button[data-tab="${name}"]`)?.click(); }
+async function refreshHomeStatus() {
+  const [, routing] = await Promise.all([loadState(), api('/routing')]);
+  ROUTING = routing;
+  renderHome();
+}
+function renderHome() {
+  if (!STATE) return;
+  const logged = STATE.sites.filter(s => s.logged_in).length;
+  $('loginStep').textContent = logged ? `${logged} 个渠道已登录，可继续下一步` : '还未登录，点击完成官方授权';
+  const r = STATE.selected_route;
+  const currentRaw = STATE.default_model || '';
+  const currentModel = r?.model || currentRaw.split('/').at(-1);
+  $('readyBadge').textContent = !logged ? '先登录账号' : r?.blocked ? '当前模型已暂停' : '账号已登录';
+  $('readyBadge').className = 'pill ' + (r?.blocked ? 'warn' : logged ? 'ok' : 'warn');
+  $('currentChoice').innerHTML = `<span class="eyebrow">聊天客户端填 default 时会使用</span><div><strong>${esc(friendlyModel(currentModel))}</strong></div><div class="choice-meta"><span>账号渠道：${esc(r?.site ? friendlySite(r.site) : r?.blocked ? '暂停调用' : '正在确认')}</span><span>失败后：${r?.fallback_sites?.length ? '尝试 ' + esc(r.fallback_sites.map(friendlySite).join(' → ')) : '该渠道的账号重试后停止'}</span></div>${r?.blocked ? `<p class="hint">${esc(r.blocked)}。请选择下方其他模型。</p>` : ''}`;
+  if (!ROUTING) { $('quickModels').textContent = '正在读取你的使用规则…'; return; }
+  const rank = ['deepseek-v4.1-flash','step-5-preview','hy4-preview'];
+  const policies = [...ROUTING.policies].sort((a,b) => (rank.indexOf(a.model) < 0 ? 99 : rank.indexOf(a.model)) - (rank.indexOf(b.model) < 0 ? 99 : rank.indexOf(b.model)));
+  $('quickModels').innerHTML = policies.map((p,i) => {
+    const a = ROUTING.active.find(x => x.model === p.model);
+    const site = a?.site || p.site;
+    const account = STATE.sites.find(s => s.site === site);
+    const paused = !!a?.blocked || !p.enabled;
+    const loggedIn = account?.logged_in && account?.enabled;
+    const selected = currentRaw === p.model;
+    const enabled = !paused && loggedIn;
+    const fallback = p.fallbackMode === 'off' ? [] : p.fallbackSites.filter(s => s !== site);
+    const about = p.model === 'deepseek-v4.1-flash' ? '使用国际版 WorkBuddy。免费活动与权限以你的账号为准。' : p.model === 'step-5-preview' ? '国内版优先，失败后可尝试已指定的国际版。' : p.model === 'hy4-preview' ? '先确认当前夜间活动，再启用时间规则。' : '按你保存的使用规则调用。';
+    const status = !p.enabled ? '规则已停用' : paused ? '当前不在允许时段' : !loggedIn ? '需要先登录' : selected ? '当前选择' : '账号已登录';
+    return `<article class="card quick-model ${selected ? 'selected' : ''}"><div class="row"><h4>${esc(friendlyModel(p.model))}</h4><span class="grow"></span><span class="pill ${paused ? 'warn' : selected ? 'ok' : ''}">${status}</span></div><p class="description">${esc(about)}</p><div class="model-facts"><p>使用账号：<b>${esc(friendlySite(site))}</b></p><p>失败后：${fallback.length ? '尝试 ' + esc(fallback.map(friendlySite).join(' → ')) : '同渠道换号，仍失败就停止'}</p>${p.schedule.enabled ? `<p>允许时间：${esc(p.schedule.start)}–次日 ${esc(p.schedule.end)}（北京时间）</p><p>活动至 ${esc(p.schedule.endDate || '未设置结束日期')} 的最后一晚</p>` : ''}</div><button class="btn ${selected ? '' : 'primary'}" data-use-model="${i}" ${!enabled || selected ? 'disabled' : ''}>${paused ? '暂时不能使用' : !loggedIn ? '请先登录对应账号' : selected ? '正在使用这个模型' : '使用 ' + esc(friendlyModel(p.model))}</button>${!loggedIn && !paused ? '<button class="btn" style="margin-top:8px" data-home-login="1">去登录账号</button>' : ''}</article>`;
+  }).join('') || '<div class="card">还没有常用模型规则。<button class="btn" onclick="showTab(\'routing\')">去添加使用规则</button></div>';
+  $('quickModels').querySelectorAll('[data-use-model]').forEach(b => b.onclick = async () => {
+    const model = policies[Number(b.dataset.useModel)].model;
+    b.disabled = true; b.textContent = '正在切换…';
+    try { await setDefault(model); await refreshHomeStatus(); $('homeMessage').textContent = `已切换为 ${friendlyModel(model)}。客户端仍填 default，即可在下一次对话中使用。`; }
+    catch (e) { $('homeMessage').textContent = '切换失败：' + e.message; renderHome(); }
+  });
+  $('quickModels').querySelectorAll('[data-home-login]').forEach(b => b.onclick = () => showTab('accounts'));
+}
+async function copyConnection(kind) {
+  try {
+    const values = {base:STATE?.base_url,full:STATE?.full_url,model:'default'};
+    const value = kind === 'key' ? (await api('/connection')).api_key : values[kind];
+    if (!value) throw new Error('尚未读取到连接信息，请稍后刷新页面');
+    await navigator.clipboard.writeText(value);
+    $('copyMessage').textContent = ({base:'API 地址',full:'完整请求地址',model:'模型名称',key:'API 密钥'}[kind]) + '已复制，粘贴到聊天客户端的对应输入框即可。';
+  } catch (e) { $('copyMessage').textContent = '复制未完成：' + e.message + '。地址与模型名可直接选中文本复制。'; }
+}
+
+// ---------- 主题 ----------
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  const btn = $('themeBtn');
+  if (btn) {
+    btn.textContent = t === 'light' ? '☀️' : '🌙';
+    btn.title = t === 'light' ? '当前：浅色（点击切换深色）' : '当前：深色（点击切换浅色）';
+  }
+}
+function toggleTheme() {
+  const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  try { localStorage.setItem('wb-theme', next); } catch { /* 无痕模式下忽略 */ }
+  applyTheme(next);
+}
+// 与 <head> 里的首屏脚本保持一致（那里已设过 dataset，这里只同步按钮外观）
+applyTheme(document.documentElement.dataset.theme || 'dark');
+
+// ---------- tabs ----------
+document.querySelectorAll('nav button').forEach((b) => {
+  b.onclick = () => {
+    document.querySelectorAll('nav button').forEach((x) => x.classList.toggle('active', x === b));
+    ['overview', 'models', 'routing', 'usage', 'logs', 'accounts', 'service'].forEach((t) => {
+      $('tab-' + t).classList.toggle('hidden', t !== b.dataset.tab);
+    });
+    if (b.dataset.tab === 'usage') loadUsage();
+    if (b.dataset.tab === 'models') renderModels();
+    if (b.dataset.tab === 'routing') loadRouting();
+    if (b.dataset.tab === 'accounts') renderAccounts();
+  };
+});
+
+// ---------- 状态总览 ----------
+function fmtUptime(ms) {
+  const s = Math.floor(ms / 1000), m = Math.floor(s / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  return d ? `${d}天${h % 24}小时` : h ? `${h}小时${m % 60}分` : m ? `${m}分${s % 60}秒` : `${s}秒`;
+}
+
+async function loadState() {
+  STATE = await api('/state');
+  $('health').className = 'dot ' + (STATE.sites.some((s) => s.logged_in) ? 'on' : 'off');
+  $('verline').textContent = `v${STATE.version} · Node ${STATE.node}`;
+  $('defmodel').innerHTML = `当前选择 <b>${esc(friendlyModel(STATE.default_model.split('/').at(-1)))}</b>`;
+  $('fullUrl').textContent = STATE.full_url;
+  $('baseUrl').textContent = STATE.base_url;
+  $('apiKey').textContent = STATE.api_key_count ? '密钥已保存在本机，点击右侧按钮复制' : '当前未设置密钥';
+  renderHome();
+  $('svcVer').textContent = `v${STATE.version} / ${STATE.node}`;
+  $('svcUp').textContent = fmtUptime(STATE.uptime_ms);
+  $('svcHost').textContent = STATE.base_url;
+  $('svcSite').textContent = friendlySite(STATE.selected_route?.site || STATE.default_site);
+
+  $('siteCards').innerHTML = STATE.sites.map((s) => `
+    <div class="card">
+      <h3><span class="dot ${s.logged_in ? 'on' : 'off'}"></span>${esc(friendlySite(s.site))}
+        ${s.enabled ? '' : '<span class="pill">已禁用</span>'}</h3>
+      <div class="kv"><span>渠道编号（高级）</span><span>${esc(s.site)}</span></div>
+      <div class="kv"><span>官方服务地址</span><span>${esc(s.apiBase)}</span></div>
+      <div class="kv"><span>已登录账号</span><span>${s.account_count
+        ? `<b>${s.account_count}</b> 个（${s.account_usable} 个可用）`
+        : '未登录'}</span></div>
+      <div class="kv"><span>剩余额度</span><span>${s.credit !== undefined ? '<b>' + s.credit + '</b> 积分' : (s.credit_error ? '<span class="pill bad">查询失败</span>' : '—')}</span></div>
+      <div class="kv"><span>可用模型</span><span>${s.model_count} 个${s.catalog_source === 'seed' ? '（内置清单）' : ''}</span></div>
+      <div class="kv"><span>登录凭证有效期</span><span>${s.token_expires_at ? new Date(s.token_expires_at).toLocaleString() : '—'}</span></div>
+    </div>`).join('');
+}
+
+// ---------- 模型 ----------
+async function loadModels() {
+  MODELS = await api('/models');
+  ALIASES = MODELS.aliases || {};
+  $('curDefault').textContent = MODELS.default_model;
+  $('defmodel').innerHTML = `当前选择 <b>${esc(friendlyModel(MODELS.default_model.split('/').at(-1)))}</b>`;
+  renderModels();
+}
+
+function multText(m) {
+  if (m.free) return '<span class="pill free">免费 x0.00</span>';
+  if (m.credits) return `<span class="pill paid">${esc(m.credits)}</span>`;
+  if (m.multiplier !== null) return `<span class="pill paid">x${m.multiplier}</span>`;
+  return '<span class="pill">价格未知</span>';
+}
+
+function renderModels() {
+  if (!MODELS) return;
+  const q = ($('modelFilter').value || '').toLowerCase();
+  const rows = MODELS.data.filter((m) => !q || (m.id + ' ' + (m.name || '')).toLowerCase().includes(q));
+  $('modelTable').querySelector('tbody').innerHTML = rows.map((m) => {
+    const isDef = m.id === MODELS.default_model;
+    return `<tr>
+      <td><code>${esc(m.id)}</code>${m.alias_of ? ` <span class="pill">→${esc(m.alias_of)}</span>` : ''}${m.pending_login ? ' <span class="pill">未登录</span>' : ''}</td>
+      <td>${esc(friendlySite(m.site))}</td>
+      <td>${multText(m)}</td>
+      <td>${m.context ? Math.round(m.context / 1000) + 'k' : '—'}</td>
+      <td class="muted">${esc(m.name || '')}</td>
+      <td class="probe-cell" data-id="${esc(m.id)}" data-site="${esc(m.site)}">—</td>
+      <td>${isDef ? '<span class="pill ok">当前默认</span>' : `<button class="btn model-select" data-model="${esc(m.id)}" data-site="${esc(m.site)}">使用该渠道</button>`} <button class="btn route-edit" data-model="${esc(m.alias_of || m.id.split('/').slice(1).join('/') || m.id)}" data-site="${esc(m.site)}">调整使用规则</button></td>
+    </tr>`;
+  }).join('');
+  $('modelTable').querySelectorAll('.model-select').forEach(b => b.onclick = async () => { try { b.disabled=true; await setDefault(b.dataset.model,b.dataset.site); } catch(e) { alert('切换失败：'+e.message); b.disabled=false; } });
+  $('modelTable').querySelectorAll('.route-edit').forEach(b => b.onclick = async () => { document.querySelector('nav button[data-tab="routing"]').click(); await loadRouting(); editRoute(b.dataset.model, b.dataset.site); });
+}
+
+async function setDefault(model, site) {
+  const r = await api('/default-model', { method: 'POST', body: { model, site } });
+  $('curDefault').textContent = r.default_model;
+  $('defmodel').innerHTML = `当前选择 <b>${esc(friendlyModel(r.default_model.split('/').at(-1)))}</b>`;
+  await loadModels();
+  await loadState();
+}
+
+async function probeVisible() {
+  if (!confirm('检查会向每个可见模型发送测试消息，可能消耗额度。继续检查吗？')) return;
+  const q = ($('modelFilter').value || '').toLowerCase();
+  const rows = MODELS.data.filter((m) => !q || (m.id + ' ' + (m.name || '')).toLowerCase().includes(q)).slice(0, 40);
+  const targets = rows.map((m) => {
+    const [site, model] = m.id.includes('/') && !m.alias_of ? m.id.split('/') : [m.site, m.alias_of || m.id];
+    return { site, model };
+  });
+  $('probeBtn').disabled = true;
+  $('probeBtn').innerHTML = '<span class="spin"></span> 探测中…';
+  try {
+    const r = await api('/probe', { method: 'POST', body: { targets } });
+    for (const x of r.results) {
+      const cell = document.querySelector(`.probe-cell[data-id="${CSS.escape(x.model)}"][data-site="${CSS.escape(x.site)}"]`)
+        || document.querySelector(`.probe-cell[data-id="${CSS.escape(x.site + '/' + x.model)}"]`);
+      if (cell) cell.innerHTML = x.ok ? '<span class="pill ok">可尝试</span>' : `<span class="pill bad">${x.status || 'ERR'}</span>`;
+    }
+  } finally {
+    $('probeBtn').disabled = false;
+    $('probeBtn').textContent = '检查这些模型（可能消耗额度）';
+  }
+}
+
+// ---------- 路由 ----------
+let ROUTING = null;
+let editingModel = null;
+const siteLabel = id => friendlySite(id);
+async function loadRouting() {
+  try {
+    ROUTING = await api('/routing');
+    for (const id of ['routeSite', 'routeNightSite']) {
+      const before = $(id).value;
+      $(id).innerHTML = ROUTING.sites.map(s => `<option value="${esc(s.id)}">${esc(friendlySite(s.id))}${s.logged_in ? '' : '（未登录）'}${s.enabled ? '' : '（禁用）'}</option>`).join('');
+      if (before) $(id).value = before;
+    }
+    $('poolMax').value = ROUTING.pool?.maxAccountsPerRequest || 3;
+    $('poolSwitch').checked = ROUTING.pool?.switchSiteOnExhausted !== false;
+    $('globalRouteMode').value = ROUTING.routing.fallbackMode;
+    $('routeModelIds').innerHTML = [...new Set((MODELS?.data || []).map(m => m.alias_of || m.id.split('/').slice(1).join('/') || m.id))].map(m => `<option value="${esc(m)}"></option>`).join('');
+    renderRouteList();
+    renderHome();
+    if (!$('routeModel').value) { editRoute(); $('routeEditor').open = false; }
+  } catch (e) { $('routeMessage').textContent = e.message; }
+}
+function renderRouteList() {
+  $('routeList').innerHTML = ROUTING.policies.length ? ROUTING.policies.map((p, i) => {
+    const active = ROUTING.active.find(a => a.model === p.model);
+    const site = active?.site || p.site;
+    const fallbacks = p.fallbackMode === 'off' ? [] : p.fallbackSites.filter(s => s !== site);
+    return `<div class="card" style="margin-top:10px"><div class="row"><b>${esc(friendlyModel(p.model))}</b><span class="pill ${p.enabled ? active?.blocked ? 'warn' : 'ok' : ''}">${!p.enabled ? '已停用' : active?.blocked ? '当前暂停' : '规则已启用'}</span><span class="grow"></span><button class="btn" data-edit="${i}">修改规则</button><button class="btn" data-default="${i}" ${!p.enabled || active?.blocked ? 'disabled' : ''}>使用这个模型</button></div><div class="rule-facts"><div><b>优先使用</b>${esc(siteLabel(site))}</div><div><b>当前渠道失败后</b>${fallbacks.length ? '先换账号，再尝试 ' + esc(fallbacks.map(siteLabel).join(' → ')) : '先换账号，仍失败就停止'}</div>${p.schedule.enabled ? `<div><b>允许调用的时间</b>${esc(p.schedule.start)}–${esc(p.schedule.end)}（北京时间）</div><div><b>活动日期</b>${esc(p.schedule.startDate || '不限')} 至 ${esc(p.schedule.endDate || '不限')} 的最后一晚</div>` : ''}</div>${active?.blocked && p.enabled ? '<p class="hint">现在不在允许的活动时间内，可以回到首页选择其他模型。</p>' : ''}<details class="helper-details"><summary>查看模型编号和更多信息</summary><p class="hint">模型编号：${esc(p.model)}<br>${p.requireFree ? '所有调用都要确认免费，价格未知时暂停。' : '调用时间与渠道按本规则限制，实际收费以上游活动为准。'}${p.fallbackMode === 'freeOnly' ? '<br>备用渠道必须在目录中明确标注免费。' : ''}</p><button class="btn danger" data-remove="${i}">删除这条规则</button></details></div>`;
+  }).join('') : '<p class="hint">尚未配置模型规则。可从模型表选择站点，或使用上方配置按钮。</p>';
+  $('routeList').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => editRoute(ROUTING.policies[b.dataset.edit].model));
+  $('routeList').querySelectorAll('[data-default]').forEach(b => b.onclick = async () => { try { await setDefault(ROUTING.policies[b.dataset.default].model); $('routeMessage').textContent = '默认模型已按规则设置，客户端继续填写 default。'; } catch(e) { $('routeMessage').textContent = e.message; } });
+  $('routeList').querySelectorAll('[data-remove]').forEach(b => b.onclick = async () => { try { if (!confirm('删除后这个模型将按普通方式选择渠道，原来的时间和费用限制也会移除。确定删除吗？')) return; const remaining = ROUTING.policies.filter((_, i) => i !== Number(b.dataset.remove)); await persistRouting(remaining); $('routeMessage').textContent = '已删除规则。'; } catch(e) { $('routeMessage').textContent = e.message; } });
+}
+function editRoute(model = '', site = 'cn-cli') {
+  $('routeEditor').open = true;
+  const p = ROUTING.policies.find(x => x.model === model);
+  editingModel = p?.model || null;
+  $('routeModel').value = model;
+  $('routeSite').value = p?.site || site;
+  $('routeMode').value = p?.fallbackMode || 'off';
+  $('routeFree').checked = p?.requireFree === true;
+  $('routeEnabled').checked = p?.enabled !== false;
+  $('routeSchedule').checked = p?.schedule.enabled === true;
+  $('routeStart').value = p?.schedule.start || '';
+  $('routeEnd').value = p?.schedule.end || '';
+  $('routeStartDate').value = p?.schedule.startDate || '';
+  $('routeEndDate').value = p?.schedule.endDate || '';
+  $('routeNightSite').value = p?.schedule.site || site;
+  $('routeOutside').value = p?.schedule.outside || 'block';
+  $('routeFallbacks').innerHTML = ROUTING.sites.map(s => `<label><input type="checkbox" value="${esc(s.id)}" ${p?.fallbackSites.includes(s.id) ? 'checked' : ''} />${esc(friendlySite(s.id))}</label>`).join('');
+  $('routeMessage').textContent = '';
+}
+function routePreset(kind) {
+  const all = [...new Set((MODELS?.data || []).map(m => m.alias_of || m.id.split('/').slice(1).join('/') || m.id))];
+  const model = kind === 'hy4' ? all.find(m => /hy4.*preview/i.test(m)) || 'hy4-preview' : kind === 'deepseek' ? all.find(m => /deepseek.*v4\.1.*flash/i.test(m)) || 'deepseek-v4.1-flash' : all.find(m => /step.*5.*preview/i.test(m)) || '';
+  editRoute(model, kind === 'deepseek' ? 'intl-work' : 'cn-cli');
+  if (editingModel) { $('routeMessage').textContent = '已加载现有规则，修改后点击“保存规则”。'; return; }
+  $('routeMessage').textContent = kind === 'hy4' ? '已填写国内 Hy4。填写实际免费时段后勾选“启用时段”；时段外默认暂停。尚未保存。' : kind === 'step' ? '请核对 Step 的准确模型 ID，选择首选与允许的备用站点。两站点是否免费以上游实际规则为准。尚未保存。' : '已填写国际 WorkBuddy DeepSeek；默认不跨站点。请核对账号权限与免费活动后保存。';
+}
+async function persistRouting(policies) {
+  await api('/routing', { method: 'POST', body: { policies, routing: { fallbackMode: $('globalRouteMode').value }, pool: { maxAccountsPerRequest: Number($('poolMax').value), switchSiteOnExhausted: $('poolSwitch').checked } } });
+  await loadRouting();
+}
+async function saveRoute() {
+  try {
+    const p = { model: $('routeModel').value.trim(), site: $('routeSite').value, enabled: $('routeEnabled').checked, requireFree: $('routeFree').checked, fallbackMode: $('routeMode').value, fallbackSites: [...$('routeFallbacks').querySelectorAll('input:checked')].map(x => x.value), schedule: { enabled: $('routeSchedule').checked, start: $('routeStart').value, end: $('routeEnd').value, startDate: $('routeStartDate').value, endDate: $('routeEndDate').value, site: $('routeNightSite').value, timezone: 'Asia/Shanghai', outside: $('routeOutside').value } };
+    if (p.schedule.enabled && (!p.schedule.start || !p.schedule.end)) throw new Error('请填写免费时段的起止时间。');
+    const policies = ROUTING.policies.filter(x => x.model !== editingModel && x.model !== p.model);
+    policies.push(p);
+    await persistRouting(policies);
+    editRoute(p.model);
+    $('routeMessage').textContent = '规则已保存并立即生效。需要客户端 default 跟随时，点击“按此规则设为默认”。';
+  } catch(e) { $('routeMessage').textContent = e.message; }
+}
+async function savePoolOptions() {
+  try { await persistRouting(ROUTING.policies); $('routeMessage').textContent = '账号与站点切换设置已保存。'; } catch(e) { $('routeMessage').textContent = e.message; }
+}
+async function previewRoute() {
+  try { const r = await api('/routing/preview', { method:'POST', body:{ model:$('routeModel').value.trim() || 'default' } }); $('routeMessage').textContent = `首选：${siteLabel(r.site)} / ${r.model}\n备用：${r.fallback_sites.map(siteLabel).join(' → ') || '无'}\n${r.note}`; } catch(e) { $('routeMessage').textContent = e.message; }
+}
+
+// ---------- 用量 ----------
+async function loadUsage() {
+  const u = await api('/usage');
+  const t = u.today;
+  $('usageCards').innerHTML = `
+    <div class="card"><h3>今日</h3>
+      <div class="kv"><span>调用次数</span><span><b>${t.calls}</b>（失败 ${t.errors}）</span></div>
+      <div class="kv"><span>输入 / 输出 token</span><span>${t.promptTokens} / ${t.completionTokens}</span></div>
+      <div class="kv"><span>消耗 credit</span><span>${(+t.credit).toFixed(3)}</span></div>
+    </div>
+    <div class="card"><h3>累计（自 ${u.since}）</h3>
+      <div class="kv"><span>调用次数</span><span><b>${u.totals.calls}</b>（失败 ${u.totals.errors}）</span></div>
+      <div class="kv"><span>输入 / 输出 token</span><span>${u.totals.promptTokens} / ${u.totals.completionTokens}</span></div>
+      <div class="kv"><span>消耗 credit</span><span>${(+u.totals.credit).toFixed(3)}</span></div>
+    </div>`;
+  const max = Math.max(1, ...u.recent.map((d) => d.calls));
+  $('usageBars').innerHTML = u.recent.map((d) => `
+    <div class="bar" style="height:${Math.max(3, (d.calls / max) * 100)}%" title="${d.date} 调用 ${d.calls} 次 / ${(+d.credit).toFixed(3)} credit">
+      <b>${d.calls}</b><i>${d.date.slice(5)}</i></div>`).join('');
+  $('usageTable').querySelector('tbody').innerHTML = u.byModel.slice(0, 40).map((m) => `
+    <tr><td><code>${esc(m.model)}</code></td><td>${esc(m.site)}</td><td>${m.calls}</td>
+      <td>${m.errors || ''}</td><td>${m.promptTokens}</td><td>${m.completionTokens}</td>
+      <td>${(+m.credit).toFixed(3)}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">暂无数据</td></tr>';
+}
+
+async function resetUsage() {
+  if (!confirm('确定清空用量统计？')) return;
+  await api('/usage/reset', { method: 'POST' });
+  loadUsage();
+}
+
+// ---------- 日志 ----------
+let lastSeq = 0;
+async function pollLogs() {
+  try {
+    const r = await api('/logs?after=' + lastSeq);
+    lastSeq = r.lastSeq;
+    if (r.list.length) {
+      const box = $('logs');
+      box.insertAdjacentHTML('beforeend', r.list.map((l) =>
+        `<div class="lv-${esc(l.level)}">${esc(l.time)} [${esc(l.level.toUpperCase())}] ${esc(l.text)}</div>`).join(''));
+      if ($('autoScroll').checked) box.scrollTop = box.scrollHeight;
+    }
+  } catch { /* 忽略 */ }
+}
+
+// ---------- 账号（号池） ----------
+function acctStatusPill(a) {
+  if (!a.enabled) return '<span class="pill">已禁用</span>';
+  if (a.exhausted) return '<span class="pill bad">额度耗尽</span>';
+  if (a.usable) return '<span class="pill ok">可尝试</span>';
+  if (a.cooldown_until) return '<span class="pill warn">暂时休息，稍后重试</span>';
+  return '<span class="pill warn">不可用</span>';
+}
+
+function renderAccounts() {
+  if (!STATE) return;
+  $('accountCards').innerHTML = STATE.sites.map((s) => {
+    const accounts = s.accounts || [];
+    const 概览 = accounts.length
+      ? `${accounts.length} 个账号，${s.account_usable || 0} 个可用`
+      : '未登录';
+    return `
+    <div class="card">
+      <h3><span class="dot ${s.logged_in ? 'on' : 'off'}"></span>${esc(friendlySite(s.site))}
+        <span class="pill" style="margin-left:6px">${esc(概览)}</span></h3>
+      <div class="kv"><span>渠道编号（高级）</span><span>${esc(s.site)}</span></div>
+      ${accounts.length ? `<div class="acct-list">${accounts.map((a) => acctRow(s.site, a)).join('')}</div>`
+        : '<div class="muted" style="margin:8px 0">还没有登录。点击“登录 / 添加账号”，在官方页面完成授权。</div>'}
+      <div class="row" style="margin-top:10px">
+        <button class="btn primary" onclick="startLogin('${esc(s.site)}')">登录 / 添加账号</button>
+        <button class="btn" onclick="refreshPool('${esc(s.site)}')">刷新余额</button>
+        ${accounts.length ? `<button class="btn danger" onclick="logout('${esc(s.site)}')">退出该渠道所有账号</button>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function acctRow(site, a) {
+  const 到期 = a.expires_at ? new Date(a.expires_at).toLocaleDateString() : '—';
+  const 余额 = a.credit !== undefined ? `${a.credit} 积分`
+    : a.credit_error ? `<span class="muted" title="${esc(a.credit_error)}">查询失败</span>` : '—';
+  return `
+    <div class="acct ${a.usable ? '' : 'acct-off'}">
+      <div class="acct-head">
+        <span class="acct-name">${esc(a.label)}</span>
+        ${acctStatusPill(a)}
+        ${a.is_default ? '<span class="pill">默认</span>' : ''}
+      </div>
+      <div class="acct-meta">
+        uid ${esc(String(a.uid || '').slice(0, 8))}… · 余额 ${余额} · token 至 ${esc(到期)}
+        ${a.fail_count ? ` · 连续失败 ${a.fail_count} 次` : ''}
+      </div>
+      ${a.last_error ? `<div class="acct-err" title="${esc(a.last_error)}">${esc(a.last_error.slice(0, 90))}</div>` : ''}
+      <div class="acct-ops">
+        <button class="btn mini" onclick="renameAccount('${esc(site)}','${esc(a.id)}','${esc(a.label)}')">改名</button>
+        <button class="btn mini" onclick="toggleAccount('${esc(site)}','${esc(a.id)}',${a.enabled ? 'false' : 'true'})">${a.enabled ? '禁用' : '启用'}</button>
+        ${(a.exhausted || a.fail_count) ? `<button class="btn mini" onclick="resetAccount('${esc(site)}','${esc(a.id)}')">重置状态</button>` : ''}
+        <button class="btn mini danger" onclick="removeAccount('${esc(site)}','${esc(a.id)}','${esc(a.label)}')">删除</button>
+      </div>
+    </div>`;
+}
+
+async function poolPost(path, body) {
+  await api(path, { method: 'POST', body });
+  await loadState();
+  renderAccounts();
+}
+
+async function toggleAccount(site, id, enabled) {
+  await poolPost('/pool/account', { site, id, enabled });
+}
+
+async function resetAccount(site, id) {
+  await poolPost('/pool/account', { site, id, reset: true });
+}
+
+async function renameAccount(site, id, old) {
+  const label = window.prompt('账号显示名：', old);
+  if (!label || !label.trim()) return;
+  await poolPost('/pool/account', { site, id, label: label.trim() });
+}
+
+async function removeAccount(site, id, label) {
+  if (!window.confirm(`确认删除账号「${label}」？\n（只删本机保存的凭证，不影响你的账号本身）`)) return;
+  await poolPost('/pool/account/remove', { site, id });
+}
+
+async function refreshPool(site) {
+  const r = await api('/pool?site=' + encodeURIComponent(site));
+  STATE.sites = STATE.sites.map((s) => (s.site === site ? { ...s, accounts: r.accounts } : s));
+  renderAccounts();
+}
+
+async function startLogin(site) {
+  loginSite = site;
+  const label = window.prompt('给这个账号起个名字（可留空，用昵称）：', '') || null;
+  let r;
+  try {
+    r = await api('/login/start', { method: 'POST', body: { site, label } });
+  } catch (e) {
+    // DeepSeek 官方站点没有设备授权流程，改用「粘贴 token」
+    if (e.needToken) {
+      return promptTokenLogin(site, e.hint);
+    }
+    throw e;
+  }
+  $('loginBox').classList.remove('hidden');
+  $('loginUrl').textContent = r.authUrl;
+  $('loginMsg').textContent = '等待授权…';
+  openLoginUrl();
+  pollLogin();
+}
+
+// DeepSeek 官方站点：粘贴 token 登录
+async function promptTokenLogin(site, hint) {
+  const token = window.prompt(
+    `【${site}】需要粘贴 token\n\n` +
+      '取法：浏览器登录 chat.deepseek.com → F12 → Console（如被拦先输入「允许粘贴」）→ 执行：\n' +
+      "JSON.parse(localStorage.getItem('userToken')).value\n\n" +
+      (hint ? '提示：' + hint + '\n\n' : '') +
+      '把 token 粘贴到这里：',
+  );
+  if (!token || !token.trim()) return;
+  try {
+    const r = await api('/login/token', { method: 'POST', body: { site, token: token.trim() } });
+    $('loginBox').classList.remove('hidden');
+    $('loginUrl').textContent = '（token 登录，无需跳转）';
+    $('loginMsg').innerHTML = `<span class="pill ok">登录成功</span> ${esc(r.account || '')}`;
+    await loadState();
+    renderAccounts();
+  } catch (e) {
+    $('loginBox').classList.remove('hidden');
+    $('loginMsg').innerHTML = `<span class="pill bad">${esc(e.message)}</span>`;
+  }
+}
+
+function openLoginUrl() { window.open($('loginUrl').textContent, '_blank'); }
+
+async function pollLogin() {
+  if (!loginSite) return;
+  try {
+    const r = await api('/login/poll?site=' + encodeURIComponent(loginSite));
+    if (r.done) {
+      $('loginMsg').innerHTML = `<span class="pill ok">登录成功</span> ${esc(r.label || '')} ${esc(r.nickname || '')}` +
+        (r.account_count > 1 ? ` <span class="muted">（该站点现有 ${r.account_count} 个账号）</span>` : '');
+      await loadState();
+      renderAccounts();
+      return;
+    }
+    $('loginMsg').textContent = '等待授权…（' + String(r.msg || '').slice(0, 60) + '）';
+  } catch (e) {
+    $('loginMsg').innerHTML = `<span class="pill bad">${esc(e.message)}</span>`;
+    return;
+  }
+  setTimeout(pollLogin, 3000);
+}
+
+async function logout(site) {
+  if (!confirm(`确定退出 ${site} 的登录？（只删除本项目内的凭证文件）`)) return;
+  await api('/login/logout', { method: 'POST', body: { site } });
+  await loadState();
+  renderAccounts();
+}
+
+// ---------- 服务 ----------
+async function stopService() {
+  if (!confirm('确定停止反代服务？TraeWork 会立刻连不上。')) return;
+  if (window.desktop) { await window.desktop.stop(); return; }
+  try { await api('/service/stop', { method: 'POST' }); } catch { /* 连接会被切断 */ }
+  // 用主题变量而不是写死的颜色，浅色主题下才不会突然变黑
+  document.body.innerHTML =
+    '<div style="padding:48px;font:15px/1.9 var(--sans);color:var(--fg);background:var(--bg);min-height:100vh">' +
+    '<h2 style="margin:0 0 8px;font-size:19px">服务已停止</h2>' +
+    '<p style="color:var(--fg-2);margin:0">双击桌面快捷方式「启动 WorkBuddy 反代」或运行 start.cmd 可重新启动。</p>' +
+    '</div>';
+}
+
+function copyText(t) { navigator.clipboard?.writeText(t); }
+
+async function setupDesktop() {
+  if (!window.desktop) return;
+  $('desktopPanel').classList.remove('hidden');
+  const status = await window.desktop.status();
+  $('desktopStartup').checked = status.startup;
+  $('desktopStartup').disabled = !status.startup_supported;
+  const run = async fn => { try { const result = await fn(); $('desktopMessage').textContent = result?.canceled ? '已取消导入。' : '操作已完成。'; } catch(e) { $('desktopMessage').textContent = e.message; } };
+  $('desktopStartup').onchange = () => run(async()=>{try { await window.desktop.setStartup($('desktopStartup').checked); } catch(e) { $('desktopStartup').checked = (await window.desktop.status()).startup; throw e; }});
+  $('desktopImport').onclick = () => run(()=>window.desktop.importData());
+  $('desktopData').onclick = () => run(()=>window.desktop.openData());
+  $('desktopRestart').onclick = () => run(()=>window.desktop.restart());
+  $('desktopQuit').onclick = () => run(()=>window.desktop.quit());
+}
+
+// ---------- 启动 ----------
+(async () => {
+  await setupDesktop();
+  await loadState();
+  await loadModels();
+  await loadRouting();
+  renderAccounts();
+  pollLogs();
+  setInterval(pollLogs, 2000);
+  setInterval(() => refreshHomeStatus().catch(() => { $('verline').textContent = '连接中断，请刷新页面'; }), 20000);
+})().catch(e => { $('readyBadge').textContent = '加载失败，请刷新页面'; $('homeMessage').textContent = e.message; });
+</script>
+</body>
+</html>
