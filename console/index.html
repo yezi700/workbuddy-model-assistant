@@ -422,13 +422,14 @@
         <b>当前选择：</b><span id="curDefault" class="pill ok"></span>
         <span class="grow"></span>
         <input id="modelFilter" placeholder="搜索模型 ID / 名称" style="width:220px" oninput="renderModels()" />
-        <button class="btn" onclick="loadModels(true)">刷新目录与价格</button>
+        <button class="btn" onclick="loadModels(true)">刷新接口与官方文档</button>
         <button class="btn" id="probeBtn" onclick="probeVisible()">检查这些模型（可能消耗额度）</button>
       </div>
-      <p class="hint">一个模型可能在多个账号渠道出现。“使用该渠道”会固定到该行渠道；“调整使用规则”可以设置失败后换到哪里。带 <span class="pill free">免费</span> 的是官方目录标注免费。<br>
+      <p class="hint">一个模型可能在多个账号渠道出现。“使用该渠道”会固定到该行渠道；“调整使用规则”可以设置失败后换到哪里。零倍率来自当前账号接口，限免标签不代表无限额度。<br>
       注意：目录来自各站点实时接口，国际版控制台接口不稳定时会用内置清单兜底，内置清单不含可靠价格，价格未知不能视为免费。两个渠道的目录始终显示，未登录时不能调用。参考清单不代表账号权限，实际可用模型可能随版本和套餐变化。</p>
+      <p id="modelUpdateStatus" class="hint">价格以当前账号接口为依据；官方文档补充模型说明。</p>
       <div class="table-wrap" style="max-height:62vh"><table id="modelTable"><thead><tr>
-        <th>模型名称</th><th>账号渠道</th><th>费用信息</th><th>可处理长度</th><th>模型说明</th><th>检查结果</th><th></th>
+        <th>模型名称</th><th>账号渠道</th><th>费用信息</th><th>输入上限</th><th>模型说明</th><th>检查结果</th><th></th>
       </tr></thead><tbody></tbody></table></div>
     </div>
   </section>
@@ -723,16 +724,26 @@ async function loadState() {
 
 // ---------- 模型 ----------
 async function loadModels(force = false) {
+  if (loadModels.busy) return;
+  loadModels.busy = true;
+  $('modelUpdateStatus').textContent = '正在检查账号接口和官方文档…';
+  try {
   MODELS = await api('/models' + (force ? '?refresh=1' : ''));
   ALIASES = MODELS.aliases || {};
   $('curDefault').textContent = MODELS.default_model;
   $('defmodel').innerHTML = `当前选择 <b>${esc(friendlyModel(MODELS.default_model.split('/').at(-1)))}</b>`;
   renderModels();
+  const docStatus = Object.entries(MODELS.documents || {}).filter(([,d])=>d).map(([s,d])=>`${friendlySite(s)}文档：${d.source==='live'?'已读取':d.source==='cache'?'读取失败，显示缓存':'暂无法读取'}${d.fetchedAt?'（'+new Date(d.fetchedAt).toLocaleString('zh-CN')+'）':''}`).join('；');
+  $('modelUpdateStatus').textContent = `检查于 ${new Date().toLocaleString('zh-CN')}。停留本页每分钟检查接口，文档缓存 5 分钟；手动刷新立即重新读取。${docStatus}`;
+  } catch (e) {
+    $('modelUpdateStatus').textContent = `更新失败：${e.message}。当前表格保留上次结果，请查看各行更新时间。`;
+    throw e;
+  } finally { loadModels.busy = false; }
 }
 
 function multText(m) {
   if (m.catalog_credits && ['inactive-promotion','stale-zero'].includes(m.price_status)) return `<span class="pill">目录 ${esc(m.catalog_credits)}</span>`;
-  if (m.free) return '<span class="pill free">免费 x0.00</span>';
+  if (m.free) return `<span class="pill free">${esc(m.activity_labels?.find(x=>/免费|限免/.test(x)) || '接口零倍率')} x0.00</span>`;
   if (m.credits) return `<span class="pill paid">${esc(m.credits)}</span>`;
   if (m.multiplier !== null) return `<span class="pill paid">x${m.multiplier}</span>`;
   return '<span class="pill">价格未知</span>';
@@ -748,9 +759,9 @@ function renderModels() {
     return `<tr>
       <td><code>${esc(m.id)}</code>${m.alias_of ? ` <span class="pill">→${esc(m.alias_of)}</span>` : ''}${m.pending_login ? ' <span class="pill">未登录</span>' : ''}</td>
       <td>${esc(friendlySite(m.site))}</td>
-      <td>${multText(m)}<div class="muted" style="font-size:11px">${esc(m.price_note || '')}</div>${m.price_updated_at ? `<div class="muted" style="font-size:11px">${m.catalog_source === 'upstream(cache)' ? '缓存' : '更新'}：${esc(new Date(m.price_updated_at).toLocaleString('zh-CN'))}</div>` : ''}</td>
-      <td>${m.context ? Math.round(m.context / 1000) + 'k' : '—'}</td>
-      <td class="muted">${esc(m.name || '')}<div style="font-size:11px">${esc(m.availability_note || '')}</div></td>
+      <td>${multText(m)}<div class="muted" style="font-size:11px">${esc(m.price_note || '')}</div>${m.catalog_error ? '<div class="muted" style="font-size:11px">接口读取失败，当前为缓存或参考信息</div>' : ''}${m.price_updated_at ? `<div class="muted" style="font-size:11px">${m.catalog_source === 'upstream(cache)' ? '缓存' : '更新'}：${esc(new Date(m.price_updated_at).toLocaleString('zh-CN'))}</div>` : ''}</td>
+      <td>${m.context ? Math.round(m.context / 1000) + 'k' : '—'}${m.context_default ? `<div class="muted" style="font-size:11px">默认 ${Math.round(m.context_default / 1000)}k</div>` : ''}${m.max_output ? `<div class="muted" style="font-size:11px">输出上限 ${Math.round(m.max_output / 1000)}k</div>` : ''}</td>
+      <td class="muted">${esc(m.description || m.name || '')}<div style="font-size:11px">${esc(m.availability_note || '')}</div>${m.documentation_url ? `<a href="${esc(m.documentation_url)}" target="_blank" rel="noopener">官方文档${m.documentation_status === 'cache' ? '（缓存）' : m.documentation_status === 'unavailable' ? '（暂无法读取）' : ''}</a>` : ''}</td>
       <td class="probe-cell" data-id="${esc(m.id)}" data-site="${esc(m.site)}">—</td>
       <td>${!m.selectable ? `<span class="pill">${m.blocked_reason ? '规则损坏，已暂停' : '请先登录'}</span>` : isDef ? '<span class="pill ok">当前默认</span>' : `<button class="btn model-select" data-model="${esc(m.id)}" data-site="${esc(m.site)}">使用该渠道</button>`} <button class="btn route-edit" data-model="${esc(m.alias_of || m.id.split('/').slice(1).join('/') || m.id)}" data-site="${esc(m.site)}">调整使用规则</button></td>
     </tr>`;
@@ -1162,6 +1173,7 @@ async function setupDesktop() {
   const refreshStatus = () => refreshHomeStatus().catch(() => { $('verline').textContent = '连接中断，请刷新页面'; });
   setInterval(() => { if (logsVisible()) pollLogs(); }, 2000);
   setInterval(() => { if (!document.hidden) refreshStatus(); }, 20000);
+  setInterval(() => { if (!document.hidden && document.querySelector('nav button[data-tab="models"]')?.classList.contains('active')) loadModels().catch(() => {}); }, 60000);
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
     refreshStatus();

@@ -15,6 +15,7 @@ import {
   pickAccount,
 } from './pool.mjs';
 import { getCatalog, resolveTarget } from './router.mjs';
+import {getModelDocument} from './model-docs.mjs';
 import { consoleModels } from './console-models.mjs';
 import { validatePolicies, preferredSite } from './routing-policy.mjs';
 import { openChat, queryCredit, classifyFrame, upstreamErrorMessage, supportsCreditQuery } from './upstream.mjs';
@@ -221,10 +222,13 @@ export async function handleConsoleApi(ctx) {
   // ---- 模型清单（含 default 虚拟模型） ----
   if (p === '/models' && method === 'GET') {
     // 控制台逐站点展示；API 客户端模型清单仍按原逻辑合并。
-    const list = await consoleModels(cfg, { loggedIn: isLoggedIn, getCatalog: (config,site)=>getCatalog(config,site,{force:url.searchParams.get('refresh')==='1'}) });
+    const force=url.searchParams.get('refresh')==='1';
+    const documents=cfg.workbuddyOnly ? Object.fromEntries(await Promise.all(Object.keys(cfg.sites).filter(s=>cfg.sites[s].enabled!==false).map(async s=>[s,await getModelDocument(s,{force})]))) : {};
+    const list = await consoleModels(cfg, { documents, loggedIn: isLoggedIn, getCatalog: (config,site)=>getCatalog(config,site,{force}) });
     return sendJson(res, 200, {
       default_model: cfg.defaultModel,
       default_site: cfg.defaultSite,
+      documents,
       aliases: cfg.modelAliases || {},
       model_routes: cfg.modelRoutes || {},
       data: list,

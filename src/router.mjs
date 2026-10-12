@@ -8,7 +8,7 @@ import { policyFor, preferredSite, routeCandidates } from './routing-policy.mjs'
 import {catalogIdentity, readCatalogCache, writeCatalogCache} from './catalog-cache.mjs';
 import {cachedPriceModels} from './model-prices.mjs';
 
-const TTL_OK = 5 * 60 * 1000;
+const TTL_OK = 60 * 1000;
 const TTL_ERR = 60 * 1000;
 const catalogs = new Map(); // site → { at, ttl, models: Map, error }
 

@@ -1,7 +1,8 @@
 import { parseMultiplier, isExcluded } from './router.mjs';
+import {modelNameKey} from './model-docs.mjs';
 import reference from './workbuddy-reference.json' with { type: 'json' };
 
-export async function consoleModels(cfg, { includeLoggedOut = true, loggedIn, getCatalog }) {
+export async function consoleModels(cfg, { includeLoggedOut = true, loggedIn, getCatalog, documents = {} }) {
   const data = [];
   for (const [site, settings] of Object.entries(cfg.sites)) {
     if (settings.enabled === false) continue;
@@ -14,12 +15,16 @@ export async function consoleModels(cfg, { includeLoggedOut = true, loggedIn, ge
       if (isExcluded(cfg,site,info.id)) continue;
       const credits = logged && !info.reference ? info.credits ?? null : null;
       const mult = parseMultiplier(credits);
+      const doc=documents[site];
+      const docModel=doc?.models?.find(m=>modelNameKey(m.name)===modelNameKey(info.name||info.id));
       data.push({ id: `${site}/${info.id}`, site, name: info.name || info.id,
         credits, multiplier: Number.isFinite(mult) ? mult : null, free: logged && mult === 0,
-        context: info.contextWindow || null, max_output: info.maxTokens || null,
+        description: info.description || docModel?.description || null, activity_labels:info.badges || [],
+        documentation_url:doc?.url || null, documentation_updated_at:doc?.fetchedAt ? new Date(doc.fetchedAt).toISOString() : null, documentation_status:doc?.source || null, documentation_matched:!!docModel,
+        context_default:info.contextDefault || null, context: info.contextWindow || null, max_output: info.maxTokens || null,
         pending_login: !logged, selectable: logged && !cfg.blockedRoutingModels?.[info.id], blocked_reason:cfg.blockedRoutingModels?.[info.id] || null, catalog_source: cat.source,
         catalog_credits: info.catalogCredits || null,price_status:info.priceStatus || null,
-        price_updated_at:cat.fetchedAt ? new Date(cat.fetchedAt).toISOString() : null,
+        catalog_error:cat.error || null, price_updated_at:cat.fetchedAt ? new Date(cat.fetchedAt).toISOString() : null,
         availability_note: !logged ? '未登录，暂不可调用' : info.reference ? '参考清单，当前账号可用性未验证' : '来自该渠道的官方目录',
         price_note: !logged ? '未登录，未查询费用' : info.priceNote || (credits != null ? (cat.source === 'upstream(cache)' ? '上次官方目录缓存，实际费用以上游为准' : '来自官方模型目录') : info.reference || cat.source === 'seed' ? '当前官方目录未列出，费用未确认' : '上游未提供价格，不能视为免费'),
       });

@@ -12,6 +12,9 @@ export function normalizeModelCatalog(json, now=Date.now()) {
   const permitted=cli?.models?.length ? new Set(cli.models) : null;
   return data.models.filter(m=>m.id && !m.disabled && (!permitted || permitted.has(m.id))).map(m=>{
     const base=creditMultiplier(m.credits);
+    const badges=(m.tags||[]).filter(t=>typeof t==='string'&&t.startsWith('badge:')).map(t=>t.split(':')[1]).filter(Boolean);
+    const description=m.descriptionZh || m.descriptionEn || '';
+    const contextDefault=Number(m.contextWindow?.defaultLength)||null;
     const promotions=(data.modelPromotions || []).filter(p=>p.enabled && p.modelIds?.includes(m.id));
     const active=promotions.filter(p=>{
       const from=p.schedule?.validFrom ? Date.parse(p.schedule.validFrom) : -Infinity;
@@ -25,7 +28,8 @@ export function normalizeModelCatalog(json, now=Date.now()) {
     return {id:m.id,name:m.name || m.id,credits:effective===null ? null : `x${Number(effective.toFixed(6))} credits`,
       catalogCredits:m.credits ?? null,baseCredits:base===null ? null : `x${base} credits`,
       priceStatus:unconfirmedZero ? 'inactive-promotion' : effective===null ? 'unknown' : 'official',
-      priceNote:unconfirmedZero ? '目录返回零倍率，但对应活动当前未生效；现价待确认' : promo ? `官方活动：${promo.badge?.label || '优惠'}${promo.schedule?.validUntil ? '，截至 '+promo.schedule.validUntil : ''}` : null,
+      badges,description,contextDefault,
+      priceNote:unconfirmedZero ? '目录返回零倍率，但对应活动当前未生效；现价待确认' : promo ? `官方活动：${promo.badge?.label || '优惠'}${promo.schedule?.validUntil ? '，截至 '+promo.schedule.validUntil : ''}` : badges.length ? `官方活动标签：${badges.join('、')}；活动期限及剩余免费额度需在官方客户端确认` : null,
       priceExpiresAt:promo?.schedule?.validUntil ? Date.parse(promo.schedule.validUntil) : null,
       contextWindow:m.maxInputTokens || null,maxTokens:m.maxOutputTokens || null,
       supportsImages:Boolean(m.supportsImages),supportsToolCall:Boolean(m.supportsToolCall),supportsReasoning:Boolean(m.supportsReasoning)};
