@@ -62,6 +62,13 @@ async function smokeTest(){
     // 新配置未登录，无真实上游请求。给页面一点时间完成本机读取。
     await new Promise(resolve=>setTimeout(resolve,1500));
     const html=await (await fetch(service.config().base+'/console')).text();check('beginner interface',html.includes('WorkBuddy 模型助手') && html.includes('quickModels'));
+    check('console actually initialized',await window.webContents.executeJavaScript('Boolean(STATE && MODELS && ROUTING)'));
+    check('Electron input dialog works',await window.webContents.executeJavaScript(`(async()=>{ const value=askText('测试账号名',''); setTimeout(()=>{const d=document.querySelector('dialog');d.querySelector('input').value='测试账号';d.querySelector('.primary').click();},50);return await value==='测试账号';})()`));
+    check('login cancellation stays local',await window.webContents.executeJavaScript(`(async()=>{ const value=startLogin('intl-cli');setTimeout(()=>document.querySelector('dialog .btn').click(),50);await value;return document.getElementById('loginBox').classList.contains('hidden');})()`));
+    check('expired read session recovers',await window.webContents.executeJavaScript(`(async()=>{TOKEN='stale-session';const state=await api('/state');return Array.isArray(state.sites);})()`));
+    check('expired write is not replayed',await window.webContents.executeJavaScript(`(async()=>{TOKEN='stale-session';try{await api('/default-model',{method:'POST',body:{model:'auto',site:'intl-cli'}});return false;}catch(e){return e.message.includes('刚才的操作未执行');}})()`));
+    check('logged out channels hidden by default',await window.webContents.executeJavaScript(`(async()=>{await loadModels();return MODELS.data.length===0;})()`));
+    check('logged out catalog cannot be selected',await window.webContents.executeJavaScript(`(async()=>{$('showLoggedOut').checked=true;await loadModels();const ok=MODELS.data.length>0 && MODELS.data.every(m=>m.pending_login && !m.selectable) && !document.querySelector('#modelTable .model-select');$('showLoggedOut').checked=false;await loadModels();return ok;})()`));
     window.show();
     await new Promise(resolve=>setTimeout(resolve,400));
     const image=await window.webContents.capturePage();fs.writeFileSync(smoke.replace(/\.json$/,'.png'),image.toPNG());

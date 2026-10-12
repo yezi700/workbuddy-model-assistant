@@ -421,11 +421,12 @@
       <div class="row">
         <b>当前选择：</b><span id="curDefault" class="pill ok"></span>
         <span class="grow"></span>
+        <label class="hint"><input type="checkbox" id="showLoggedOut" onchange="loadModels()" /> 显示未登录渠道</label>
         <input id="modelFilter" placeholder="搜索模型 ID / 名称" style="width:220px" oninput="renderModels()" />
         <button class="btn" id="probeBtn" onclick="probeVisible()">检查这些模型（可能消耗额度）</button>
       </div>
       <p class="hint">一个模型可能在多个账号渠道出现。“使用该渠道”会固定到该行渠道；“调整使用规则”可以设置失败后换到哪里。带 <span class="pill free">免费</span> 的是官方目录标注免费。<br>
-      注意：目录来自各站点实时接口，国际版控制台接口不稳定时会用内置清单兜底，因此个别模型可能标了「未探测」。</p>
+      注意：目录来自各站点实时接口，国际版控制台接口不稳定时会用内置清单兜底，内置清单不含可靠价格，价格未知不能视为免费。默认只显示已登录渠道。</p>
       <div class="table-wrap" style="max-height:62vh"><table id="modelTable"><thead><tr>
         <th>模型名称</th><th>账号渠道</th><th>费用信息</th><th>可处理长度</th><th>模型说明</th><th>检查结果</th><th></th>
       </tr></thead><tbody></tbody></table></div>
@@ -537,11 +538,12 @@
 </main>
 
 <script>
-const TOKEN = window.__WB_TOKEN__ || '';
+let TOKEN = window.__WB_TOKEN__ || '';
+let tokenRefresh = null;
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-async function api(path, opts = {}) {
+async function api(path, opts = {}, refreshed = false) {
   const res = await fetch('/console/api' + path, {
     ...opts,
     headers: { 'X-Console-Token': TOKEN, 'Content-Type': 'application/json', ...(opts.headers || {}) },
@@ -551,7 +553,17 @@ async function api(path, opts = {}) {
   let json = null;
   try { json = JSON.parse(text); } catch { json = { raw: text }; }
   if (!res.ok) {
-    const err = new Error(json.error || ('HTTP ' + res.status));
+    if (res.status === 401 && json.error?.type === 'invalid_console_token' && !refreshed) {
+      tokenRefresh ||= fetch('/console', { cache: 'no-store' }).then(r => { if (!r.ok) throw new Error('无法恢复控制台会话'); return r.text(); }).then(html => {
+        const match = html.match(/window\.__WB_TOKEN__=("(?:[^"\\]|\\.)*");/);
+        if (!match) throw new Error('无法恢复控制台会话，请重新打开控制台');
+        TOKEN = JSON.parse(match[1]);
+      }).finally(() => { tokenRefresh = null; });
+      await tokenRefresh;
+      if (!opts.method || opts.method === 'GET') return api(path, opts, true);
+      throw new Error('控制台会话已恢复。刚才的操作未执行，请再点击一次。');
+    }
+    const err = new Error(typeof json.error === 'string' ? json.error : json.error?.message || ('HTTP ' + res.status));
     // 把后端标记（如 need_token）带到 Error 上，便于调用方分支处理
     if (json.need_token) err.needToken = true;
     if (json.hint) err.hint = json.hint;
@@ -561,6 +573,32 @@ async function api(path, opts = {}) {
 }
 
 let STATE = null, MODELS = null, ALIASES = {}, loginSite = null;
+
+// 使用应用内弹窗，兼容 Electron（不支持 window.prompt）与浏览器。
+let dialogQueue = Promise.resolve();
+function askDialog(message, value, input = false, secret = false) {
+  const open = () => new Promise(resolve => {
+    const d = document.createElement('dialog');
+    d.style.cssText = 'border:1px solid #d9e2ef;border-radius:16px;padding:24px;width:min(440px,85vw);color:#10213b;background:#fff';
+    const text = document.createElement('p'); text.textContent = message; text.style.whiteSpace = 'pre-wrap'; d.append(text);
+    const field = document.createElement('input'); field.type = secret ? 'password' : 'text'; field.value = value || ''; field.autocomplete = 'off';
+    if (input) { field.style.cssText = 'width:100%;box-sizing:border-box;margin:8px 0 18px'; d.append(field); }
+    const row = document.createElement('div'); row.className = 'row';
+    const cancel = document.createElement('button'); cancel.className = 'btn'; cancel.textContent = '取消';
+    const ok = document.createElement('button'); ok.className = 'btn primary'; ok.textContent = '确定';
+    row.append(cancel, ok); d.append(row); document.body.append(d);
+    let settled = false;
+    const finish = accepted => { if (settled) return; settled = true; const result = input ? (accepted ? field.value : null) : accepted; d.close(); d.remove(); resolve(result); };
+    cancel.onclick = () => finish(false); ok.onclick = () => finish(true);
+    d.oncancel = event => { event.preventDefault(); finish(false); };
+    field.onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); finish(true); } };
+    d.showModal(); (input ? field : cancel).focus();
+  });
+  const result = dialogQueue.then(open, open); dialogQueue = result.catch(() => {}); return result;
+}
+const askConfirm = message => askDialog(message, '', false);
+const askText = (message, value = '', secret = false) => askDialog(message, value, true, secret);
+
 
 const friendlySite = id => ({'cn-cli':'国内版','intl-cli':'国际版 CodeBuddy','intl-work':'国际版 WorkBuddy'}[id] || id || '尚未确定');
 const friendlyModel = id => ({'hy4-preview':'Hy4 Preview','deepseek-v4.1-flash':'DeepSeek V4.1','step-5-preview':'Step-5 Preview'}[id] || id || '尚未选择');
@@ -639,7 +677,7 @@ document.querySelectorAll('nav button').forEach((b) => {
       $('tab-' + t).classList.toggle('hidden', t !== b.dataset.tab);
     });
     if (b.dataset.tab === 'usage') loadUsage();
-    if (b.dataset.tab === 'models') renderModels();
+    if (b.dataset.tab === 'models') loadModels().catch(e => { $('homeMessage').textContent = e.message; });
     if (b.dataset.tab === 'routing') loadRouting();
     if (b.dataset.tab === 'accounts') renderAccounts();
   };
@@ -682,7 +720,7 @@ async function loadState() {
 
 // ---------- 模型 ----------
 async function loadModels() {
-  MODELS = await api('/models');
+  MODELS = await api('/models' + ($('showLoggedOut').checked ? '?include_logged_out=1' : ''));
   ALIASES = MODELS.aliases || {};
   $('curDefault').textContent = MODELS.default_model;
   $('defmodel').innerHTML = `当前选择 <b>${esc(friendlyModel(MODELS.default_model.split('/').at(-1)))}</b>`;
@@ -705,11 +743,11 @@ function renderModels() {
     return `<tr>
       <td><code>${esc(m.id)}</code>${m.alias_of ? ` <span class="pill">→${esc(m.alias_of)}</span>` : ''}${m.pending_login ? ' <span class="pill">未登录</span>' : ''}</td>
       <td>${esc(friendlySite(m.site))}</td>
-      <td>${multText(m)}</td>
+      <td>${multText(m)}<div class="muted" style="font-size:11px">${esc(m.price_note || '')}</div></td>
       <td>${m.context ? Math.round(m.context / 1000) + 'k' : '—'}</td>
       <td class="muted">${esc(m.name || '')}</td>
       <td class="probe-cell" data-id="${esc(m.id)}" data-site="${esc(m.site)}">—</td>
-      <td>${isDef ? '<span class="pill ok">当前默认</span>' : `<button class="btn model-select" data-model="${esc(m.id)}" data-site="${esc(m.site)}">使用该渠道</button>`} <button class="btn route-edit" data-model="${esc(m.alias_of || m.id.split('/').slice(1).join('/') || m.id)}" data-site="${esc(m.site)}">调整使用规则</button></td>
+      <td>${!m.selectable ? '<span class="pill">请先登录</span>' : isDef ? '<span class="pill ok">当前默认</span>' : `<button class="btn model-select" data-model="${esc(m.id)}" data-site="${esc(m.site)}">使用该渠道</button>`} <button class="btn route-edit" data-model="${esc(m.alias_of || m.id.split('/').slice(1).join('/') || m.id)}" data-site="${esc(m.site)}">调整使用规则</button></td>
     </tr>`;
   }).join('');
   $('modelTable').querySelectorAll('.model-select').forEach(b => b.onclick = async () => { try { b.disabled=true; await setDefault(b.dataset.model,b.dataset.site); } catch(e) { alert('切换失败：'+e.message); b.disabled=false; } });
@@ -725,9 +763,9 @@ async function setDefault(model, site) {
 }
 
 async function probeVisible() {
-  if (!confirm('检查会向每个可见模型发送测试消息，可能消耗额度。继续检查吗？')) return;
+  if (!await askConfirm('检查会向每个可见模型发送测试消息，可能消耗额度。继续检查吗？')) return;
   const q = ($('modelFilter').value || '').toLowerCase();
-  const rows = MODELS.data.filter((m) => !q || (m.id + ' ' + (m.name || '')).toLowerCase().includes(q)).slice(0, 40);
+  const rows = MODELS.data.filter((m) => m.selectable && (!q || (m.id + ' ' + (m.name || '')).toLowerCase().includes(q))).slice(0, 40);
   const targets = rows.map((m) => {
     const [site, model] = m.id.includes('/') && !m.alias_of ? m.id.split('/') : [m.site, m.alias_of || m.id];
     return { site, model };
@@ -777,7 +815,7 @@ function renderRouteList() {
   }).join('') : '<p class="hint">尚未配置模型规则。可从模型表选择站点，或使用上方配置按钮。</p>';
   $('routeList').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => editRoute(ROUTING.policies[b.dataset.edit].model));
   $('routeList').querySelectorAll('[data-default]').forEach(b => b.onclick = async () => { try { await setDefault(ROUTING.policies[b.dataset.default].model); $('routeMessage').textContent = '默认模型已按规则设置，客户端继续填写 default。'; } catch(e) { $('routeMessage').textContent = e.message; } });
-  $('routeList').querySelectorAll('[data-remove]').forEach(b => b.onclick = async () => { try { if (!confirm('删除后这个模型将按普通方式选择渠道，原来的时间和费用限制也会移除。确定删除吗？')) return; const remaining = ROUTING.policies.filter((_, i) => i !== Number(b.dataset.remove)); await persistRouting(remaining); $('routeMessage').textContent = '已删除规则。'; } catch(e) { $('routeMessage').textContent = e.message; } });
+  $('routeList').querySelectorAll('[data-remove]').forEach(b => b.onclick = async () => { try { if (!await askConfirm('删除后这个模型将按普通方式选择渠道，原来的时间和费用限制也会移除。确定删除吗？')) return; const remaining = ROUTING.policies.filter((_, i) => i !== Number(b.dataset.remove)); await persistRouting(remaining); $('routeMessage').textContent = '已删除规则。'; } catch(e) { $('routeMessage').textContent = e.message; } });
 }
 function editRoute(model = '', site = 'cn-cli') {
   $('routeEditor').open = true;
@@ -853,7 +891,7 @@ async function loadUsage() {
 }
 
 async function resetUsage() {
-  if (!confirm('确定清空用量统计？')) return;
+  if (!await askConfirm('确定清空用量统计？')) return;
   await api('/usage/reset', { method: 'POST' });
   loadUsage();
 }
@@ -884,7 +922,7 @@ function acctStatusPill(a) {
 
 function renderAccounts() {
   if (!STATE) return;
-  $('accountCards').innerHTML = STATE.sites.map((s) => {
+  $('accountCards').innerHTML = '<p class="hint" style="grid-column:1/-1">同一国际账号的 CodeBuddy 与 WorkBuddy 共用 Buddy AI 权益和 Credits。两处余额不能相加；切换产品不能补充额度。渠道授权、模型目录和免费活动分别确认，退出一个渠道不会退出另一个。</p>' + STATE.sites.map((s) => {
     const accounts = s.accounts || [];
     const 概览 = accounts.length
       ? `${accounts.length} 个账号，${s.account_usable || 0} 个可用`
@@ -934,6 +972,8 @@ async function poolPost(path, body) {
   await api(path, { method: 'POST', body });
   await loadState();
   renderAccounts();
+  await loadModels();
+  await refreshHomeStatus();
 }
 
 async function toggleAccount(site, id, enabled) {
@@ -945,13 +985,13 @@ async function resetAccount(site, id) {
 }
 
 async function renameAccount(site, id, old) {
-  const label = window.prompt('账号显示名：', old);
+  const label = await askText('账号显示名：', old);
   if (!label || !label.trim()) return;
   await poolPost('/pool/account', { site, id, label: label.trim() });
 }
 
 async function removeAccount(site, id, label) {
-  if (!window.confirm(`确认删除账号「${label}」？\n（只删本机保存的凭证，不影响你的账号本身）`)) return;
+  if (!await askConfirm(`确认删除账号「${label}」？\n（只删本机保存的凭证，不影响你的账号本身）`)) return;
   await poolPost('/pool/account/remove', { site, id });
 }
 
@@ -963,7 +1003,9 @@ async function refreshPool(site) {
 
 async function startLogin(site) {
   loginSite = site;
-  const label = window.prompt('给这个账号起个名字（可留空，用昵称）：', '') || null;
+  const entered = await askText('给这个账号起个名字（可留空，用昵称）：', '');
+  if (entered === null) return;
+  const label = entered.trim() || null;
   let r;
   try {
     r = await api('/login/start', { method: 'POST', body: { site, label } });
@@ -983,12 +1025,13 @@ async function startLogin(site) {
 
 // DeepSeek 官方站点：粘贴 token 登录
 async function promptTokenLogin(site, hint) {
-  const token = window.prompt(
+  const token = await askText(
     `【${site}】需要粘贴 token\n\n` +
       '取法：浏览器登录 chat.deepseek.com → F12 → Console（如被拦先输入「允许粘贴」）→ 执行：\n' +
       "JSON.parse(localStorage.getItem('userToken')).value\n\n" +
       (hint ? '提示：' + hint + '\n\n' : '') +
       '把 token 粘贴到这里：',
+    '', true,
   );
   if (!token || !token.trim()) return;
   try {
@@ -1026,15 +1069,17 @@ async function pollLogin() {
 }
 
 async function logout(site) {
-  if (!confirm(`确定退出 ${site} 的登录？（只删除本项目内的凭证文件）`)) return;
+  if (!await askConfirm(`确定退出 ${site} 的登录？（只删除本项目内的凭证文件）`)) return;
   await api('/login/logout', { method: 'POST', body: { site } });
   await loadState();
   renderAccounts();
+  await loadModels();
+  await refreshHomeStatus();
 }
 
 // ---------- 服务 ----------
 async function stopService() {
-  if (!confirm('确定停止反代服务？TraeWork 会立刻连不上。')) return;
+  if (!await askConfirm('确定停止反代服务？TraeWork 会立刻连不上。')) return;
   if (window.desktop) { await window.desktop.stop(); return; }
   try { await api('/service/stop', { method: 'POST' }); } catch { /* 连接会被切断 */ }
   // 用主题变量而不是写死的颜色，浅色主题下才不会突然变黑

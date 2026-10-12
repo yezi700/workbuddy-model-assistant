@@ -544,8 +544,8 @@ export async function queryCredit(cfg, site, accountId = null) {
       { status: 501, site },
     );
   }
-  await ensureToken(cfg, site, { accountId });
-  const auth = getAuth(site);
+  const { accountId: usedAccount } = await ensureToken(cfg, site, { accountId });
+  const auth = getAccount(site, usedAccount) || getAuth(site);
   const now = new Date();
   const end = new Date(now.getTime() + 365 * 101 * 24 * 3600 * 1000);
   const fmt = (d) => d.toISOString().slice(0, 19).replace('T', ' ');

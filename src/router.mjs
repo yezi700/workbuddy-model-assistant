@@ -63,14 +63,13 @@ function expandAlias(cfg, name, depth = 0) {
 
 /** 取站点模型目录（带缓存）。动态接口不可用时回落到站点内置清单（seedModels）。 */
 export async function getCatalog(cfg, site, { force = false } = {}) {
-  const cached = catalogs.get(site);
-  if (!force && cached && Date.now() - cached.at < cached.ttl) return cached;
-
   if (!isLoggedIn(site)) {
     const entry = { at: Date.now(), ttl: TTL_ERR, models: new Map(), error: '未登录', source: 'none' };
     catalogs.set(site, entry);
     return entry;
   }
+  const cached = catalogs.get(site);
+  if (!force && cached && Date.now() - cached.at < cached.ttl) return cached;
   const 过滤 = (list) =>
     new Map(list.filter((m) => !isExcluded(cfg, site, m.id)).map((m) => [m.id, m]));
   /** 目录里带 maxInputTokens 的模型，顺手登记进「上下文上限」表供压缩用。 */

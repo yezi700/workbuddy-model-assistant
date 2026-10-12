@@ -12,7 +12,8 @@ import {
   setAccountLabel,
   resetAccountState,
 } from './pool.mjs';
-import { getCatalog, mergedModels, parseMultiplier, resolveTarget } from './router.mjs';
+import { getCatalog, resolveTarget } from './router.mjs';
+import { consoleModels } from './console-models.mjs';
 import { validatePolicies, preferredSite } from './routing-policy.mjs';
 import { openChat, queryCredit, classifyFrame, upstreamErrorMessage, supportsCreditQuery } from './upstream.mjs';
 import { startLogin, pollLogin } from './device-login.mjs';
@@ -185,31 +186,7 @@ export async function handleConsoleApi(ctx) {
   // ---- 模型清单（含 default 虚拟模型） ----
   if (p === '/models' && method === 'GET') {
     // 控制台逐站点展示；API 客户端模型清单仍按原逻辑合并。
-    const merged = [];
-    for (const site of siteKeys(cfg)) {
-      const cat = await getCatalog(cfg, site);
-      for (const info of cat.models.values()) merged.push({ id: `${site}/${info.id}`, site, info, mult: parseMultiplier(info.credits) });
-    }
-    const list = merged.map((m) => ({
-      id: m.id,
-      site: m.site,
-      name: m.info?.name || m.id,
-      credits: m.info?.credits || null,
-      multiplier: Number.isFinite(m.mult) ? m.mult : null,
-      context: m.info?.contextWindow || null,
-      max_output: m.info?.maxTokens || null,
-      alias_of: m.aliasOf || null,
-      free: m.mult === 0,
-    }));
-    // 未登录站点的内置清单也列出来，方便用户知道有哪些可登
-    for (const s of siteKeys(cfg)) {
-      if (isLoggedIn(s)) continue;
-      for (const m of cfg.sites[s].seedModels || []) {
-        if (!list.some((x) => x.id === m.id && x.site === s)) {
-          list.push({ id: `${s}/${m.id}`, site: s, name: `${m.name}（${s} 未登录）`, credits: null, multiplier: null, pending_login: true });
-        }
-      }
-    }
+    const list = await consoleModels(cfg, { includeLoggedOut: url.searchParams.get('include_logged_out') === '1', loggedIn: isLoggedIn, getCatalog });
     return sendJson(res, 200, {
       default_model: cfg.defaultModel,
       default_site: cfg.defaultSite,
@@ -225,6 +202,8 @@ export async function handleConsoleApi(ctx) {
     const model = String(body.model || '').trim();
     if (!model) return sendJson(res, 400, { error: '缺少 model' });
     if (body.site && !cfg.sites[String(body.site)]) return sendJson(res, 400, { error: '未知站点' });
+    const requestedSite = String(body.site || (cfg.sites[model.split('/')[0]] ? model.split('/')[0] : cfg.defaultSite));
+    if (cfg.sites[requestedSite]?.enabled === false || !isLoggedIn(requestedSite)) return sendJson(res, 409, { error: '该渠道未登录或已停用，请先登录账号再选择模型。' });
     cfg.defaultModel = body.site && !model.includes('/') ? `${body.site}/${model}` : model;
     if (body.site) cfg.defaultSite = String(body.site);
     saveConfig(cfg);
