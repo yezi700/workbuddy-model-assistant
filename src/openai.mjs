@@ -1,6 +1,6 @@
 // OpenAI 兼容路由：/v1/models、/v1/chat/completions（流式 + 非流式，支持工具调用）
 // 多站点：请求里的 model 可写裸 ID（自动选站点），也可写 `站点/模型` 显式指定。
-import { openChat, openChatRotating, aggregateFrames, classifyFrame, upstreamErrorMessage, newId } from './upstream.mjs';
+import { openChatRotating, aggregateFrames, classifyFrame, upstreamErrorMessage, newId } from './upstream.mjs';
 import { openRoutedChat } from './routed-chat.mjs';
 import { resolveTarget, mergedModels, parseMultiplier, isExcluded } from './router.mjs';
 import { recordUsage } from './usage.mjs';
@@ -61,14 +61,6 @@ export function isGatewayError(status) {
   return status === 502 || status === 503 || status === 504;
 }
 
-/** 换个站点重试同一请求（用于降级）。换站点后账号池也换了一套，因此 exclude 重置。 */
-async function openWithFallback(cfg, target, upstreamBody, signal, 原因) {
-  warn(`[${target.site}] ${原因}，自动降级到备用站点 ${target.fallback.site} 重试`);
-  upstreamBody.model = target.fallback.model;
-  const r = await openWithRetry(cfg, target.fallback.site, upstreamBody, signal);
-  return { up: r.up, site: target.fallback.site, model: target.fallback.model };
-}
-
 export async function handleChatCompletions(ctx) {
   const { cfg, res, body, signal } = ctx;
   const target = await resolveTarget(cfg, body.model);
@@ -98,11 +90,13 @@ export async function handleChatCompletions(ctx) {
     startSSE(res, { 'X-Service': 'workbuddy-proxy', 'X-Upstream-Site': site });
     let valid = 0;
     let finished = false;
+    let upstreamFailed = false;
     let upstreamUsage = null;
     try {
       for await (const payload of up.frames) {
         const parsed = classifyFrame(payload);
         if (parsed.kind === 'error') {
+          upstreamFailed = true;
           await writeSSE(res, JSON.stringify({ error: { message: parsed.message, type: 'upstream_error' } }));
           break;
         }
@@ -114,7 +108,8 @@ export async function handleChatCompletions(ctx) {
         if (parsed.obj.choices?.[0]?.delta?.content) contentChars += parsed.obj.choices[0].delta.content.length;
         await writeSSE(res, JSON.stringify(normalizeChunk(parsed.obj, publicModel)));
       }
-      if (valid === 0) {
+      // 上游已报错时不再追加一条「空流」错误
+      if (valid === 0 && !upstreamFailed) {
         await writeSSE(res, JSON.stringify({ error: { message: '上游返回空流', type: 'upstream_error' } }));
       }
       finished = true;
@@ -126,7 +121,7 @@ export async function handleChatCompletions(ctx) {
         site,
         model,
         mode: 'stream',
-        status: finished ? 200 : 499,
+        status: upstreamFailed ? 502 : finished ? 200 : 499,
         ttfb_ms: ttfb ?? '-',
         ms: Date.now() - started,
         frames: valid,
@@ -135,7 +130,7 @@ export async function handleChatCompletions(ctx) {
         site,
         model,
         mode: 'stream',
-        status: finished ? 200 : 499,
+        status: upstreamFailed ? 502 : finished ? 200 : 499,
         promptTokens: upstreamUsage?.prompt_tokens ?? estimateTokens(JSON.stringify(body.messages || [])),
         completionTokens: upstreamUsage?.completion_tokens ?? estimateTokens('x'.repeat(contentChars)),
         credit: upstreamUsage?.credit ?? 0,
@@ -164,17 +159,18 @@ export async function handleChatCompletions(ctx) {
     const bumped = { ...upstreamBody, max_tokens: Math.max(1024, askedMax * 4) };
     delete bumped.max_completion_tokens;
     warn(`[${site}] 空回答（finish=${agg.finishReason}，max_tokens=${askedMax}），放大到 ${bumped.max_tokens} 重试一次`);
-    const up2 = await openWithRetry(cfg, site, bumped, signal);
-    if (up2.ok) {
-      try {
-        agg = await aggregateFrames(up2.frames);
-      } catch {
-        /* 保留原结果 */
-      } finally {
-        up2.close();
+    // 重试只是锦上添花：失败（含连接异常）时保留原结果，不能把已拿到的回复变成 5xx
+    try {
+      const up2 = await openWithRetry(cfg, site, bumped, signal);
+      if (up2.ok) {
+        try {
+          agg = await aggregateFrames(up2.frames);
+        } finally {
+          up2.close();
+        }
       }
-    } else {
-      up2.close?.();
+    } catch (e) {
+      warn(`[${site}] 放大预算重试失败，返回原结果：${e.message}`);
     }
   }
 

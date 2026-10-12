@@ -1,5 +1,24 @@
-// HTTP 小工具：请求体读取、响应写出（含背压）、SSE 帧写出。
+// HTTP 小工具：请求体读取、响应写出（含背压）、SSE 帧写出；以及落盘用的原子写。
+import fs from 'node:fs';
+
 export const MAX_BODY = 16 * 1024 * 1024;
+
+/**
+ * 原子写文件：先写同目录临时文件再 rename 覆盖。
+ * 直接 writeFileSync 在进程被杀 / 断电时会留下半截 JSON，
+ * config.json 坏掉后服务直接起不来，号池 / 用量文件坏掉则静默清空。
+ * rename 失败（Windows 上目标被杀毒软件等占用）时退回普通写，保证不丢数据。
+ */
+export function writeFileAtomic(file, data, { mode = 0o600 } = {}) {
+  const temp = `${file}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(temp, data, { encoding: 'utf8', mode });
+    fs.renameSync(temp, file);
+  } catch {
+    try { fs.rmSync(temp, { force: true }); } catch { /* 忽略 */ }
+    fs.writeFileSync(file, data, { encoding: 'utf8', mode });
+  }
+}
 
 export async function readJsonBody(req) {
   const chunks = [];

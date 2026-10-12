@@ -96,14 +96,15 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
     for(const op of ['start','stop','restart'])handle(op,()=>perform(op));
     handle('open-data',()=>shell.openPath(dataDir));
     handle('startup',enabled=>{if(!app.isPackaged)throw new Error('安装或便携版才能设置开机启动');app.setLoginItemSettings({openAtLogin:enabled===true,path:startupExecutable});updateTray();return status();});
-    handle('port',async port=>{if(!Number.isInteger(port)||port<1024||port>65535)throw new Error('端口需为 1024–65535 的整数');await service.stop();const file=path.join(dataDir,'config.json');const c=JSON.parse(fs.readFileSync(file,'utf8'));c.port=port;fs.writeFileSync(file,JSON.stringify(c,null,2)+'\n');return perform('start');});
+    // 停服后的步骤出错时也要把服务重新拉起来，否则代理会一直停着（finally 里重启）。
+    handle('port',async port=>{if(!Number.isInteger(port)||port<1024||port>65535)throw new Error('端口需为 1024–65535 的整数');await service.stop();try{const file=path.join(dataDir,'config.json');const c=JSON.parse(fs.readFileSync(file,'utf8'));c.port=port;fs.writeFileSync(file,JSON.stringify(c,null,2)+'\n');}finally{await perform('start');}return status();});
     handle('quit',()=>{setImmediate(()=>app.quit());return {ok:true};});
     handle('import',async()=>{
       const selected=await dialog.showOpenDialog(window,{title:'选择旧代理的文件夹（包含 config.json）',properties:['openDirectory']});
       if(selected.canceled)return {canceled:true};
       const answer=await dialog.showMessageBox(window,{type:'question',buttons:['导入并替换','取消'],defaultId:1,cancelId:1,message:'导入旧配置和登录账号？',detail:'当前桌面版数据会先备份。旧文件夹内容不会修改。若旧服务仍占用相同端口，请先停止它。'});
       if(answer.response!==0)return {canceled:true};
-      await service.stop();const result=importData(selected.filePaths[0],dataDir);await perform('start');return result;
+      await service.stop();try{return importData(selected.filePaths[0],dataDir);}finally{await perform('start');}
     });
     service.on('status',()=>{updateTray();if(!service.running && !service.stopping && !quitting)void window.loadFile(path.join(__dirname,'loading.html'));});
     await window.loadFile(path.join(__dirname,'loading.html'));updateTray();await perform('start');

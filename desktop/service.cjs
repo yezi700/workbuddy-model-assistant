@@ -4,6 +4,20 @@ const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+// 每个请求都会往 desktop.log 追加一行；常驻托盘时不轮转就会无限增长。
+// 超过上限就把旧日志改名为 desktop.log.1（只保留一份）。写入量在内存里累计，不必每次 stat。
+const LOG_MAX_BYTES = 5 * 1024 * 1024;
+function logWriter(file) {
+  let size = 0;
+  try { size = fs.statSync(file).size; } catch {}
+  return chunk => {
+    try {
+      if (size > LOG_MAX_BYTES) { fs.renameSync(file, file + '.1'); size = 0; }
+      fs.appendFileSync(file, chunk);
+      size += chunk.length;
+    } catch {}
+  };
+}
 class ProxyService extends EventEmitter {
   constructor({ root, dataDir, fork }) {
     super(); this.root = root; this.dataDir = dataDir; this.fork = fork;
@@ -41,7 +55,7 @@ class ProxyService extends EventEmitter {
       cwd:this.dataDir,env:{...process.env,WB_CONFIG_DIR:this.dataDir,WB_DESKTOP_INSTANCE:this.instance},stdio:'pipe',serviceName:'WorkBuddy 本机代理',
     });
     this.child=child;
-    const log=chunk=>{try{fs.appendFileSync(path.join(this.dataDir,'desktop.log'),chunk);}catch{}};
+    const log=logWriter(path.join(this.dataDir,'desktop.log'));
     child.stdout?.on('data',log);child.stderr?.on('data',log);
     child.on('exit',code=>{if(this.child===child){this.child=null;this.running=false;if(!this.stopping)this.error=code ? '代理启动失败，请查看数据目录里的 desktop.log。' : '代理服务已停止。';this.emit('status');}});
     const expires=Date.now()+20000;

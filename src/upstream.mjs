@@ -278,7 +278,11 @@ export async function openChat(cfg, site, body, { signal, exclude = [], accountI
       minKeepMessages: cfg.context?.minKeepMessages ?? 4,
       safetyRatio: 1,
     });
-    if (!更小.stats.applied) break; // 压不动了，别再试
+    if (!更小.stats.applied) {
+      // 压不动了，别再试。响应体上面已经读掉，必须带着正文返回，否则客户端只看到空的 400
+      res = { status: res.status, _text: text };
+      break;
+    }
     当前payload = { ...当前payload, messages: 更小.messages };
     压缩重试次数++;
     warn(
@@ -608,6 +612,11 @@ export async function inspectOpening(up) {
   return { ...up, frames: (async function* () { try { yield* buffered; yield* frames; } finally { await frames.return?.(); } })() };
 }
 
+/** 上游拒绝是否可能因账号而异（换个账号有机会成功）。 */
+export function isAccountSpecificFailure(status, text) {
+  return status === 401 || status === 403 || status >= 500 || isQuotaError(status, text);
+}
+
 export async function openChatRotating(cfg, site, body, { signal, maxAccounts = 0 } = {}) {
   const tried = [];
   const 上限 = maxAccounts > 0 ? maxAccounts : Math.max(1, Number(cfg.pool?.maxAccountsPerRequest ?? 3));
@@ -641,6 +650,11 @@ export async function openChatRotating(cfg, site, body, { signal, maxAccounts = 
         warn(`[${site}] 刷新 token 失败：`, e.message);
       }
     }
+
+    // 只有「跟这个账号有关」的失败才值得换号：鉴权、额度、上游 5xx。
+    // 参数错误、模型不存在、输入太长等 4xx 换哪个号结果都一样——
+    // 原先照样轮换并给每个号记失败冷却，一次坏请求就白打 N 次上游、把 N 个号送进冷却。
+    if (!isAccountSpecificFailure(up.status, up.text)) return { up, tried };
 
     // 上报号池：额度类错误会被标记为「耗尽」，其余走冷却退避
     markFailure(site, up.accountId, { status: up.status, message: up.text });

@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import { paths, authPathFor } from './config.mjs';
 import { refreshHeaders } from './headers.mjs';
 import { log, warn, stamp } from './log.mjs';
+import { writeFileAtomic } from './util.mjs';
 import {
   DEFAULT_ACCOUNT_ID,
   listAccounts,
@@ -18,6 +19,13 @@ import {
   updateTokens,
   poolPathFor,
 } from './pool.mjs';
+
+/** 登录指引：桌面版没有 login.mjs，提示用户去控制台登录。 */
+export function loginHint(site) {
+  return process.env.WB_DESKTOP_INSTANCE
+    ? '请在模型助手的「登录账号」页登录'
+    : `请运行 node login.mjs --site ${site}`;
+}
 
 export class AuthError extends Error {
   constructor(message, code = 'auth_error') {
@@ -116,7 +124,7 @@ export function getAuth(site = 'cn-cli') {
 
 export function saveAuth(site, next) {
   const file = authPathFor(site);
-  fs.writeFileSync(file, JSON.stringify(next, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  writeFileAtomic(file, JSON.stringify(next, null, 2) + '\n');
   stores.set(storeKey(site, file), { auth: next, mtime: fs.statSync(file).mtimeMs, path: file });
   return next;
 }
@@ -244,7 +252,7 @@ export async function refreshToken(cfg, site, accountId = null) {
         clearAuth(site, id);
         err.code = 'not_logged_in';
         err.status = 401;
-        err.message = `[${site}] 登录态已失效（HTTP ${res.status} code=${json.code}）：请重新登录 —— node login.mjs --site ${site}`;
+        err.message = `[${site}] 登录态已失效（HTTP ${res.status} code=${json.code}）：请重新登录（${loginHint(site)}）`;
         warn(err.message);
       }
       throw err;
@@ -326,9 +334,9 @@ export async function ensureToken(cfg, site = cfg.defaultSite, { force = false, 
     return picked ? picked.id : null;
   })();
 
-  if (!id) throw new AuthError(`[${site}] 尚未登录：请运行 node login.mjs --site ${site}`, 'not_logged_in');
+  if (!id) throw new AuthError(`[${site}] 尚未登录：${loginHint(site)}`, 'not_logged_in');
   const a = getAccount(site, id);
-  if (!a?.accessToken) throw new AuthError(`[${site}] 尚未登录：请运行 node login.mjs --site ${site}`, 'not_logged_in');
+  if (!a?.accessToken) throw new AuthError(`[${site}] 尚未登录：${loginHint(site)}`, 'not_logged_in');
 
   // 把选中账号设为「当前生效账号」——后续 chatHeaders 通过 getAuth 读到的必须是它
   setCurrentAccount(site, a);

@@ -27,6 +27,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { getConfigDir, authPathFor } from './config.mjs';
 import { warn } from './log.mjs';
+import { writeFileAtomic } from './util.mjs';
 
 /** 池文件里代表「旧版单账号凭证」的固定 id。 */
 export const DEFAULT_ACCOUNT_ID = 'default';
@@ -84,7 +85,7 @@ function readPoolFile(site) {
 
 function writePool(site, pool) {
   const file = poolPathFor(site);
-  fs.writeFileSync(file, JSON.stringify(pool, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  writeFileAtomic(file, JSON.stringify(pool, null, 2) + '\n');
   cache.set(cacheKey(site), { mtime: fs.statSync(file).mtimeMs, pool });
   return pool;
 }
@@ -355,6 +356,9 @@ export function isQuotaError(status, message = '') {
   if (status === 402) return true;
   if (status === 429) return true;
   const m = String(message || '');
+  // 「输入太长」与账号额度无关，换号也没用；不能被下面的 exceed / limit 关键词误判，
+  // 否则一次超长请求会把池里每个账号都标成耗尽 6 小时。
+  if (/too long|context[ _]?length|maximum context|max(?:imum)?[ _-]?(?:input[ _-]?)?tokens|tokens?\s*(?:>|\\u003e)/i.test(m)) return false;
   if (/insufficient|quota|balance|credit|exceed|limit reached|no available/i.test(m)) return true;
   if (/额度|余额|积分不足|已用完|超出/i.test(m)) return true;
   return false;

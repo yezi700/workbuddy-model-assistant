@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { paths } from './config.mjs';
 import { warn } from './log.mjs';
+import { writeFileAtomic } from './util.mjs';
 
 // 与 config.json 同目录（跟随 setConfigDir / WB_CONFIG_DIR 变化，不冻结路径）
 const file = () => path.join(paths.root, 'usage.json');
@@ -48,7 +49,7 @@ ensureLoaded();
 function saveNow() {
   dirty = false;
   try {
-    fs.writeFileSync(file(), JSON.stringify(data, null, 2) + '\n', 'utf8');
+    writeFileAtomic(file(), JSON.stringify(data, null, 2) + '\n');
   } catch (e) {
     warn('usage.json 写入失败：', e.message);
   }

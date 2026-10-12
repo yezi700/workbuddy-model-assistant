@@ -501,6 +501,7 @@
   <!-- 账号 -->
   <section id="tab-accounts" class="hidden">
     <div class="cards" id="accountCards"></div>
+    <p id="accountMessage" class="hint" role="status" aria-live="polite"></p>
     <div class="card hidden" id="loginBox" style="margin-top:12px">
       <h3>完成授权</h3>
       <p class="hint">在浏览器打开下面的链接登录（国际版可在页面直接注册），然后点「我已完成授权」。</p>
@@ -531,7 +532,7 @@
       <div class="kv"><span>默认账号渠道</span><span id="svcSite"></span></div>
       <div class="row" style="margin-top:14px">
         <button class="btn danger" onclick="stopService()">停止服务</button>
-        <span class="muted">停止后需用桌面快捷方式或 start.cmd 重新启动</span>
+        <span class="muted" id="stopHint">停止后需用桌面快捷方式或 start.cmd 重新启动</span>
       </div>
     </div>
   </section>
@@ -541,7 +542,7 @@
 let TOKEN = window.__WB_TOKEN__ || '';
 let tokenRefresh = null;
 const $ = (id) => document.getElementById(id);
-const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 async function api(path, opts = {}, refreshed = false) {
   const res = await fetch('/console/api' + path, {
@@ -627,7 +628,8 @@ function renderHome() {
     const account = STATE.sites.find(s => s.site === site);
     const paused = !!a?.blocked || !p.enabled;
     const loggedIn = account?.logged_in && account?.enabled;
-    const selected = currentRaw === p.model;
+    // 默认模型可能存成「渠道/模型」（从模型表选择时），所以也要比对服务端解析出的实际路由
+    const selected = currentRaw === p.model || (!!r?.model && !r.blocked && r.model === p.model);
     const enabled = !paused && loggedIn;
     const fallback = p.fallbackMode === 'off' ? [] : p.fallbackSites.filter(s => s !== site);
     const about = p.model === 'deepseek-v4.1-flash' ? '使用国际版WorkBuddy AI。免费活动与权限以你的账号为准。' : p.model === 'step-5-preview' ? '国内版WorkBuddy优先，失败后可尝试已指定的国际版WorkBuddy AI。' : p.model === 'hy4-preview' ? '先确认当前夜间活动，再启用时间规则。' : '按你保存的使用规则调用。';
@@ -680,6 +682,7 @@ document.querySelectorAll('nav button').forEach((b) => {
     if (b.dataset.tab === 'models') loadModels().catch(e => { $('homeMessage').textContent = e.message; });
     if (b.dataset.tab === 'routing') loadRouting();
     if (b.dataset.tab === 'accounts') renderAccounts();
+    if (b.dataset.tab === 'logs') pollLogs();
   };
 });
 
@@ -740,7 +743,8 @@ function renderModels() {
   const q = ($('modelFilter').value || '').toLowerCase();
   const rows = MODELS.data.filter((m) => !q || (m.id + ' ' + (m.name || '')).toLowerCase().includes(q));
   $('modelTable').querySelector('tbody').innerHTML = rows.map((m) => {
-    const isDef = m.id === MODELS.default_model;
+    const route = STATE?.selected_route;
+    const isDef = m.id === MODELS.default_model || (!!route?.model && m.id === `${route.site}/${route.model}`);
     return `<tr>
       <td><code>${esc(m.id)}</code>${m.alias_of ? ` <span class="pill">→${esc(m.alias_of)}</span>` : ''}${m.pending_login ? ' <span class="pill">未登录</span>' : ''}</td>
       <td>${esc(friendlySite(m.site))}</td>
@@ -899,6 +903,7 @@ async function resetUsage() {
 
 // ---------- 日志 ----------
 let lastSeq = 0;
+const MAX_LOG_LINES = 1000;
 async function pollLogs() {
   try {
     const r = await api('/logs?after=' + lastSeq);
@@ -907,6 +912,8 @@ async function pollLogs() {
       const box = $('logs');
       box.insertAdjacentHTML('beforeend', r.list.map((l) =>
         `<div class="lv-${esc(l.level)}">${esc(l.time)} [${esc(l.level.toUpperCase())}] ${esc(l.text)}</div>`).join(''));
+      // 只保留最近的若干行：桌面版常驻时原先会无限累积 DOM 节点
+      while (box.childElementCount > MAX_LOG_LINES) box.firstElementChild.remove();
       if ($('autoScroll').checked) box.scrollTop = box.scrollHeight;
     }
   } catch { /* 忽略 */ }
@@ -936,9 +943,9 @@ function renderAccounts() {
       ${accounts.length ? `<div class="acct-list">${accounts.map((a) => acctRow(s.site, a)).join('')}</div>`
         : '<div class="muted" style="margin:8px 0">还没有登录。点击“登录 / 添加账号”，在官方页面完成授权。</div>'}
       <div class="row" style="margin-top:10px">
-        <button class="btn primary" onclick="startLogin('${esc(s.site)}')">登录 / 添加账号</button>
-        <button class="btn" onclick="refreshPool('${esc(s.site)}')">刷新余额</button>
-        ${accounts.length ? `<button class="btn danger" onclick="logout('${esc(s.site)}')">退出该渠道所有账号</button>` : ''}
+        <button class="btn primary" data-action="login" data-site="${esc(s.site)}">登录 / 添加账号</button>
+        <button class="btn" data-action="refresh" data-site="${esc(s.site)}">刷新余额</button>
+        ${accounts.length ? `<button class="btn danger" data-action="logout" data-site="${esc(s.site)}">退出该渠道所有账号</button>` : ''}
       </div>
     </div>`;
   }).join('');
@@ -961,13 +968,33 @@ function acctRow(site, a) {
       </div>
       ${a.last_error ? `<div class="acct-err" title="${esc(a.last_error)}">${esc(a.last_error.slice(0, 90))}</div>` : ''}
       <div class="acct-ops">
-        <button class="btn mini" onclick="renameAccount('${esc(site)}','${esc(a.id)}','${esc(a.label)}')">改名</button>
-        <button class="btn mini" onclick="toggleAccount('${esc(site)}','${esc(a.id)}',${a.enabled ? 'false' : 'true'})">${a.enabled ? '禁用' : '启用'}</button>
-        ${(a.exhausted || a.fail_count) ? `<button class="btn mini" onclick="resetAccount('${esc(site)}','${esc(a.id)}')">重置状态</button>` : ''}
-        <button class="btn mini danger" onclick="removeAccount('${esc(site)}','${esc(a.id)}','${esc(a.label)}')">删除</button>
+        <button class="btn mini" data-action="rename" data-site="${esc(site)}" data-id="${esc(a.id)}" data-label="${esc(a.label)}">改名</button>
+        <button class="btn mini" data-action="toggle" data-site="${esc(site)}" data-id="${esc(a.id)}" data-enabled="${a.enabled ? 'false' : 'true'}">${a.enabled ? '禁用' : '启用'}</button>
+        ${(a.exhausted || a.fail_count) ? `<button class="btn mini" data-action="reset" data-site="${esc(site)}" data-id="${esc(a.id)}">重置状态</button>` : ''}
+        <button class="btn mini danger" data-action="remove" data-site="${esc(site)}" data-id="${esc(a.id)}" data-label="${esc(a.label)}">删除</button>
       </div>
     </div>`;
 }
+
+// 账号区按钮统一走事件委托：参数放在 data-* 里，不再拼进 onclick 字符串
+// （账号名里带单引号时原先按钮会失效，精心构造的名字还能执行脚本）。
+$('accountCards').addEventListener('click', (event) => {
+  const b = event.target.closest('button[data-action]');
+  if (!b) return;
+  const { action, site, id, label } = b.dataset;
+  const run = {
+    login: () => startLogin(site),
+    refresh: () => refreshPool(site),
+    logout: () => logout(site),
+    rename: () => renameAccount(site, id, label),
+    toggle: () => toggleAccount(site, id, b.dataset.enabled === 'true'),
+    reset: () => resetAccount(site, id),
+    remove: () => removeAccount(site, id, label),
+  }[action];
+  if (!run) return;
+  $('accountMessage').textContent = '';
+  run().catch((e) => { $('accountMessage').textContent = '操作未完成：' + e.message; });
+});
 
 async function poolPost(path, body) {
   await api(path, { method: 'POST', body });
@@ -1020,6 +1047,7 @@ async function startLogin(site) {
   $('loginBox').classList.remove('hidden');
   $('loginUrl').textContent = r.authUrl;
   $('loginMsg').textContent = '等待授权…';
+  loginDeadline = Date.now() + LOGIN_WAIT_MS;
   openLoginUrl();
   pollLogin();
 }
@@ -1050,10 +1078,21 @@ async function promptTokenLogin(site, hint) {
 
 function openLoginUrl() { window.open($('loginUrl').textContent, '_blank'); }
 
+// 授权轮询：同一时间只保留一条轮询链，并设等待上限。
+// 原先每点一次「我已完成授权」就多一条每 3 秒的轮询链，且永不停止，一直打上游授权接口。
+const LOGIN_WAIT_MS = 10 * 60 * 1000;
+let loginDeadline = 0, loginPollTimer = null, loginPollSeq = 0;
 async function pollLogin() {
+  clearTimeout(loginPollTimer);
   if (!loginSite) return;
+  if (Date.now() > loginDeadline) {
+    $('loginMsg').textContent = '等待授权超时，请重新点击「登录 / 添加账号」。';
+    return;
+  }
+  const seq = ++loginPollSeq;
   try {
     const r = await api('/login/poll?site=' + encodeURIComponent(loginSite));
+    if (seq !== loginPollSeq) return; // 期间又发起了新的轮询，由新的那条负责后续
     if (r.done) {
       $('loginMsg').innerHTML = `<span class="pill ok">登录成功</span> ${esc(r.label || '')} ${esc(r.nickname || '')}` +
         (r.account_count > 1 ? ` <span class="muted">（该站点现有 ${r.account_count} 个账号）</span>` : '');
@@ -1066,7 +1105,7 @@ async function pollLogin() {
     $('loginMsg').innerHTML = `<span class="pill bad">${esc(e.message)}</span>`;
     return;
   }
-  setTimeout(pollLogin, 3000);
+  loginPollTimer = setTimeout(pollLogin, 3000);
 }
 
 async function logout(site) {
@@ -1096,6 +1135,7 @@ function copyText(t) { navigator.clipboard?.writeText(t); }
 async function setupDesktop() {
   if (!window.desktop) return;
   $('desktopPanel').classList.remove('hidden');
+  $('stopHint').textContent = '停止后可在本窗口点击「启动服务」，或右键托盘图标重新启动';
   const status = await window.desktop.status();
   $('desktopStartup').checked = status.startup;
   $('desktopStartup').disabled = !status.startup_supported;
@@ -1114,9 +1154,17 @@ async function setupDesktop() {
   await loadModels();
   await loadRouting();
   renderAccounts();
-  pollLogs();
-  setInterval(pollLogs, 2000);
-  setInterval(() => refreshHomeStatus().catch(() => { $('verline').textContent = '连接中断，请刷新页面'; }), 20000);
+  // 窗口收到托盘 / 页面不可见时暂停轮询：/state 每次都会查各渠道余额，
+  // 原先常驻托盘时也照常每 20 秒请求一次。日志只在「排查问题」页可见时拉取。
+  const logsVisible = () => !document.hidden && !$('tab-logs').classList.contains('hidden');
+  const refreshStatus = () => refreshHomeStatus().catch(() => { $('verline').textContent = '连接中断，请刷新页面'; });
+  setInterval(() => { if (logsVisible()) pollLogs(); }, 2000);
+  setInterval(() => { if (!document.hidden) refreshStatus(); }, 20000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    refreshStatus();
+    if (logsVisible()) pollLogs();
+  });
 })().catch(e => { $('readyBadge').textContent = '加载失败，请刷新页面'; $('homeMessage').textContent = e.message; });
 </script>
 </body>

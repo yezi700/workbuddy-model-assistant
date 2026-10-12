@@ -4,6 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { validatePolicies } from './routing-policy.mjs';
+import { writeFileAtomic } from './util.mjs';
 
 // 用 fileURLToPath + dirname 而不是 import.meta.dirname：
 // 后者要 Node ≥ 20.11，会让 README 声明的「≥ 18」变成假的
@@ -545,7 +546,7 @@ function loadConfigFrom(dir) {
   const configFile = path.join(dir, 'config.json');
   if (!fs.existsSync(configFile)) {
     const cfg = defaultConfig();
-    fs.writeFileSync(configFile, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+    writeFileAtomic(configFile, JSON.stringify(cfg, null, 2) + '\n');
     lastIssues = [];
     return cfg;
   }
@@ -564,13 +565,39 @@ function loadConfigFrom(dir) {
   delete cfg.upstream; // 已迁移到 sites
   lastIssues = validateConfig(cfg);
   if (cfg.workbuddyOnly === true) delete cfg.sites['intl-cli'];
-  cfg.routingPolicies = validatePolicies(cfg.routingPolicies, cfg.sites);
-  if (!['off', 'freeOnly', 'listed'].includes(cfg.routing?.fallbackMode)) throw new Error('routing.fallbackMode 无效');
+  // 与上面的校验同一原则：坏掉的规则只丢弃该条并提示，不让整个服务起不来
+  // （原先任何一条规则不合法都会直接抛错，桌面版只能显示「代理启动失败」）。
+  cfg.routingPolicies = keepValidPolicies(cfg.routingPolicies, cfg.sites, lastIssues);
+  if (!['off', 'freeOnly', 'listed'].includes(cfg.routing?.fallbackMode)) {
+    lastIssues.push(`routing.fallbackMode 无效（当前 ${JSON.stringify(cfg.routing?.fallbackMode)}），已回退为 off`);
+    cfg.routing = { ...(isPlainObject(cfg.routing) ? cfg.routing : {}), fallbackMode: 'off' };
+  }
   return cfg;
 }
 
+/** 逐条校验路由规则：整体合法时原样返回；否则保留能通过校验的规则，其余记入 issues。 */
+function keepValidPolicies(policies, sites, issues) {
+  try {
+    return validatePolicies(policies, sites);
+  } catch (e) {
+    if (!Array.isArray(policies)) {
+      issues.push(`routingPolicies 无效（${e.message}），已回退为 []`);
+      return [];
+    }
+  }
+  let kept = [];
+  for (const p of policies.slice(0, 100)) {
+    try {
+      kept = validatePolicies([...kept, p], sites);
+    } catch (e) {
+      issues.push(`routingPolicies 中模型 ${JSON.stringify(p?.model ?? null)} 的规则无效（${e.message}），已忽略该条`);
+    }
+  }
+  return kept;
+}
+
 export function saveConfig(cfg) {
-  fs.writeFileSync(paths.config, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+  writeFileAtomic(paths.config, JSON.stringify(cfg, null, 2) + '\n');
 }
 
 /** 已启用且在册的站点键列表。 */

@@ -11,6 +11,7 @@ import {
   setAccountEnabled,
   setAccountLabel,
   resetAccountState,
+  flushPool,
 } from './pool.mjs';
 import { getCatalog, resolveTarget } from './router.mjs';
 import { consoleModels } from './console-models.mjs';
@@ -23,6 +24,29 @@ import { sendJson } from './util.mjs';
 
 const startedAt = Date.now();
 const loginStates = new Map(); // site → { state, authUrl, at }
+
+/**
+ * 首页余额的短期缓存。控制台每 20 秒刷新一次 /state，原先每次都实时打各站点的计费接口，
+ * 桌面版常驻托盘一天就是几千次计费请求。余额变化不需要秒级精度；
+ * 「账号登录」页的「刷新余额」走 /pool，不经过这里，仍然实时。
+ */
+const CREDIT_TTL_MS = 60_000;
+const creditCache = new Map(); // site → { at, credit } | { at, error }
+async function cachedCredit(cfg, site) {
+  const hit = creditCache.get(site);
+  if (hit && Date.now() - hit.at < CREDIT_TTL_MS) {
+    if (hit.error) throw new Error(hit.error);
+    return hit.credit;
+  }
+  try {
+    const credit = await queryCredit(cfg, site);
+    creditCache.set(site, { at: Date.now(), credit });
+    return credit;
+  } catch (e) {
+    creditCache.set(site, { at: Date.now(), error: e.message });
+    throw e;
+  }
+}
 
 /**
  * 从 package.json 读版本号。
@@ -152,7 +176,7 @@ export async function handleConsoleApi(ctx) {
       // 跳过查询而不是报错，前端会显示「—」。
       if (info.logged_in && supportsCreditQuery(cfg, s)) {
         try {
-          const credit = await queryCredit(cfg, s);
+          const credit = await cachedCredit(cfg, s);
           info.credit = credit.remain;
           info.credit_detail = credit.detail;
           if (typeof credit.remain === 'number') recordBalance(s, credit.remain);
@@ -226,7 +250,8 @@ export async function handleConsoleApi(ctx) {
   if (p === '/aliases' && method === 'POST') {
     const body = ctx.body || {};
     const aliases = body.aliases;
-    if (!aliases || typeof aliases !== 'object') return sendJson(res, 400, { error: '缺少 aliases 对象' });
+    if (!aliases || typeof aliases !== 'object' || Array.isArray(aliases)) return sendJson(res, 400, { error: '缺少 aliases 对象' });
+    if (Object.values(aliases).some((v) => typeof v !== 'string' || !v.trim())) return sendJson(res, 400, { error: '别名的目标必须是非空字符串' });
     cfg.modelAliases = aliases;
     saveConfig(cfg);
     return sendJson(res, 200, { ok: true, aliases: cfg.modelAliases });
@@ -264,6 +289,7 @@ export async function handleConsoleApi(ctx) {
     if (!cfg.sites[site]) return sendJson(res, 400, { error: `未知站点 ${site}` });
     if (!getAccount(site, id)) return sendJson(res, 404, { error: `账号不存在：${id}` });
 
+    creditCache.delete(site);
     if (typeof body.enabled === 'boolean') setAccountEnabled(site, id, body.enabled);
     if (body.reset) resetAccountState(site, id);
     if (typeof body.label === 'string' && body.label.trim()) setAccountLabel(site, id, body.label.trim());
@@ -275,6 +301,7 @@ export async function handleConsoleApi(ctx) {
     const site = String(body.site || cfg.defaultSite);
     const id = String(body.id || '');
     if (!cfg.sites[site]) return sendJson(res, 400, { error: `未知站点 ${site}` });
+    creditCache.delete(site);
     const ok = removeAccount(site, id);
     if (!ok) return sendJson(res, 404, { error: `账号不存在：${id}` });
     return sendJson(res, 200, { ok: true, remaining: accountSnapshot(site).length });
@@ -328,6 +355,7 @@ export async function handleConsoleApi(ctx) {
     const r = await pollLogin(cfg, site, st.state, { label: st.label || null });
     if (r.done) {
       loginStates.delete(site);
+      creditCache.delete(site);
       return sendJson(res, 200, {
         done: true,
         account_id: r.auth.id,
@@ -350,6 +378,7 @@ export async function handleConsoleApi(ctx) {
     const site = String(body.site || '');
     if (!cfg.sites[site]) return sendJson(res, 400, { error: `未知站点 ${site}` });
     const id = body.id ? String(body.id) : null;
+    creditCache.delete(site);
     if (id) {
       if (!getAccount(site, id)) return sendJson(res, 404, { error: `账号不存在：${id}` });
       removeAccount(site, id);
@@ -370,6 +399,7 @@ export async function handleConsoleApi(ctx) {
   if (p === '/service/stop' && method === 'POST') {
     sendJson(res, 200, { ok: true, message: 'shutting down' });
     flushUsage();
+    flushPool();
     setTimeout(() => process.exit(0), 200);
     return;
   }

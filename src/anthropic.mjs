@@ -1,10 +1,10 @@
 // Anthropic 兼容路由：/v1/messages、/v1/messages/count_tokens
 // Trae 的「Claude 型自定义模型」走 Anthropic Messages 协议，这里做双向转换。
-import { openChat, openChatRotating, aggregateFrames, classifyFrame, upstreamErrorMessage, newId } from './upstream.mjs';
+import { openChatRotating, aggregateFrames, classifyFrame, upstreamErrorMessage, newId } from './upstream.mjs';
 import { resolveTarget } from './router.mjs';
 import { openRoutedChat } from './routed-chat.mjs';
 import { recordUsage } from './usage.mjs';
-import { startSSE, writeSSEEvent, sendJson, sendError, writeAsync, estimateTokens } from './util.mjs';
+import { startSSE, writeSSEEvent, sendJson, sendError, estimateTokens } from './util.mjs';
 import { requestLog, warn } from './log.mjs';
 
 const stopReasonMap = {
@@ -144,6 +144,7 @@ export async function handleMessages(ctx) {
     try {
       agg = await aggregateFrames(up.frames);
     } catch (e) {
+      requestLog({ site, model, mode: 'anthropic-json', status: e.status || 502, ms: Date.now() - started, note: 'aggregate_failed' });
       return sendError(res, e.status || 502, e.message, 'api_error');
     } finally {
       up.close();
@@ -151,18 +152,20 @@ export async function handleMessages(ctx) {
     // 兜底：max_tokens 过小导致空回答时放大预算重试一次
     const askedMax = Number(body.max_tokens ?? 0);
     if (!agg.content && agg.toolCallList.length === 0 && askedMax > 0 && askedMax < 1024) {
-      warn(`[${site}] 空回答（finish=${agg.finishReason}，max_tokens=${askedMax}），放大到 1024 重试一次`);
-      const up2 = await openChat(cfg, site, { ...openaiBody, max_tokens: Math.max(1024, askedMax * 4) }, { signal });
-      if (up2.ok) {
-        try {
-          agg = await aggregateFrames(up2.frames);
-        } catch {
-          /* 保留原结果 */
-        } finally {
-          up2.close();
+      const bumpedMax = Math.max(1024, askedMax * 4);
+      warn(`[${site}] 空回答（finish=${agg.finishReason}，max_tokens=${askedMax}），放大到 ${bumpedMax} 重试一次`);
+      // 重试只是锦上添花：失败（含连接异常）时保留原结果，不能把已拿到的回复变成 5xx
+      try {
+        const { up: up2 } = await openChatRotating(cfg, site, { ...openaiBody, max_tokens: bumpedMax }, { signal });
+        if (up2.ok) {
+          try {
+            agg = await aggregateFrames(up2.frames);
+          } finally {
+            up2.close();
+          }
         }
-      } else {
-        up2.close?.();
+      } catch (e) {
+        warn(`[${site}] 放大预算重试失败，返回原结果：${e.message}`);
       }
     }
     const content = [];
@@ -198,7 +201,7 @@ export async function handleMessages(ctx) {
   startSSE(res, { 'X-Service': 'workbuddy-proxy', 'X-Upstream-Site': site });
   const msgId = newId('msg');
   let blockIndex = -1; // 当前打开的内容块
-  let textBlockOpened = false;
+  let textBlockIndex = -1; // 当前打开的文本块（工具块之后再来正文要另开新块）
   let nextBlock = 0;
   const toolBlocks = new Map(); // 上游 tool_call index → anthropic block index
   let finishReason = null;
@@ -246,10 +249,10 @@ export async function handleMessages(ctx) {
       const delta = choice.delta || {};
 
       if (typeof delta.content === 'string' && delta.content) {
-        if (!textBlockOpened) {
+        if (textBlockIndex < 0 || blockIndex !== textBlockIndex) {
           await closeBlock();
           blockIndex = nextBlock++;
-          textBlockOpened = true;
+          textBlockIndex = blockIndex;
           await emit('content_block_start', { type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } });
         }
         textLen += delta.content.length;
@@ -268,15 +271,17 @@ export async function handleMessages(ctx) {
             await emit('content_block_start', {
               type: 'content_block_start',
               index: bi,
-              content_block: { type: 'tool_use', id: tc.id || newId('toolu'), name: tc.function?.name || '' },
+              content_block: { type: 'tool_use', id: tc.id || newId('toolu'), name: tc.function?.name || '', input: {} },
             });
           }
           const args = tc.function?.arguments;
           if (args) {
+            // Anthropic 规范的增量类型是 input_json_delta（原先写成 partial_json，
+            // 按规范解析的 SDK 会忽略它，工具最终拿到空参数）
             await emit('content_block_delta', {
               type: 'content_block_delta',
               index: bi,
-              delta: { type: 'partial_json', partial_json: args },
+              delta: { type: 'input_json_delta', partial_json: args },
             });
           }
         }

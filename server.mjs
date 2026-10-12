@@ -64,6 +64,26 @@ function 来源标识(req) {
   return req.socket?.remoteAddress || 'unknown';
 }
 
+/**
+ * 同类告警节流：同一个 key 每分钟只记一条，并附带期间被省略的次数。
+ * 实测：浏览器里留着的旧控制台标签页会每 2 秒带着过期会话 token 轮询一次，
+ * 原先每次都记一条 WARN，几分钟就把 500 条内存日志和 desktop.log 刷满，真正的错误被淹没。
+ */
+const 告警节流 = new Map(); // key → { at, suppressed }
+const 告警间隔毫秒 = 60_000;
+function warnThrottled(key, message) {
+  const now = Date.now();
+  const cur = 告警节流.get(key);
+  if (cur && now - cur.at < 告警间隔毫秒) {
+    cur.suppressed++;
+    return;
+  }
+  const extra = cur?.suppressed ? `（过去 1 分钟内另有 ${cur.suppressed} 次相同告警已省略）` : '';
+  if (告警节流.size > 200) 告警节流.clear(); // 有界：key 含路径，防止被随机路径撑大
+  告警节流.set(key, { at: now, suppressed: 0 });
+  warn(message + extra);
+}
+
 function consoleAuthorized(req) {
   if ((req.headers['x-console-token'] || '') === CONSOLE_TOKEN) return true;
   return authorized(req); // 也允许直接用 apiKey 调控制台接口（方便脚本）
@@ -149,7 +169,6 @@ function authorized(req) {
 }
 
 const server = http.createServer(async (req, res) => {
-  const started = Date.now();
   const url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
   const pathname = url.pathname.replace(/\/+$/, '') || '/';
 
@@ -167,7 +186,7 @@ const server = http.createServer(async (req, res) => {
         res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
       }
     } else {
-      warn(`拒绝来自非本机来源的控制台请求：${req.method} ${pathname} origin=${req.headers.origin || '-'} host=${req.headers.host || '-'}`);
+      warnThrottled(`origin:${pathname}`, `拒绝来自非本机来源的控制台请求：${req.method} ${pathname} origin=${req.headers.origin || '-'} host=${req.headers.host || '-'}`);
       return sendError(res, 403, '控制台仅允许本机访问', 'console_forbidden');
     }
     res.setHeader('X-Frame-Options', 'DENY');
@@ -194,7 +213,8 @@ const server = http.createServer(async (req, res) => {
     if (全局结果.limited || 重端点结果?.limited) {
       const 等待毫秒 = Math.max(全局结果.retryAfterMs || 0, 重端点结果?.retryAfterMs || 0);
       res.setHeader('Retry-After', String(Math.max(1, Math.ceil(等待毫秒 / 1000))));
-      warn(
+      warnThrottled(
+        `rate:${pathname}`,
         `请求过于频繁已限流：${req.method} ${pathname} ip=${ip}`
         + `${重端点结果?.limited ? '（重端点额度用尽）' : ''}`,
       );
@@ -233,7 +253,7 @@ const server = http.createServer(async (req, res) => {
     // 控制台 API（用会话 token 或 apiKey 鉴权）
     if (pathname.startsWith('/console/api/')) {
       if (!consoleAuthorized(req)) {
-        warn(`控制台接口鉴权失败：${req.method} ${pathname}`);
+        warnThrottled(`console-auth:${pathname}`, `控制台接口鉴权失败：${req.method} ${pathname}（多为之前打开、未刷新的控制台页面）`);
         return sendError(res, 401, '控制台会话失效：请刷新页面重开 /console', 'invalid_console_token');
       }
       const body = req.method === 'POST' ? await readJsonBody(req) : null;
@@ -267,7 +287,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (!authorized(req)) {
-      warn(`未授权的请求被拒绝：${req.method} ${pathname} key=${clientKey(req).slice(0, 6)}…`);
+      warnThrottled(`api-auth:${pathname}`, `未授权的请求被拒绝：${req.method} ${pathname} key=${clientKey(req).slice(0, 6)}…`);
       return sendError(res, 401, 'API Key 不正确：请在请求头携带 Authorization: Bearer <config.json 里的 apiKey>', 'invalid_api_key');
     }
 
@@ -309,7 +329,7 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/admin/shutdown' && req.method === 'POST') {
       log('收到停止指令，服务即将退出');
       sendJson(res, 200, { ok: true, message: 'shutting down' });
-      setTimeout(() => process.exit(0), 150);
+      setTimeout(() => shutdown(0), 150);
       return;
     }
 
@@ -376,11 +396,6 @@ const server = http.createServer(async (req, res) => {
     if (status >= 500) error(`${req.method} ${pathname} 处理失败：`, e.stack || e.message);
     if (!res.headersSent) sendError(res, status, e.message || 'internal error');
     else if (!res.writableEnded) res.end();
-  } finally {
-    if (pathname !== '/health') {
-      // 记录非健康检查请求的耗时（流式请求由各自 handler 记录明细）
-      void started;
-    }
   }
 });
 
@@ -431,10 +446,23 @@ server.listen(cfg.port, cfg.host, () => {
   log(`  OpenAI 客户端：Base URL = http://${cfg.host}:${cfg.port}/v1`);
 });
 
-process.on('SIGINT', () => {
-  log('收到退出信号，正在保存用量统计并关闭服务');
-  flushUsage();
-  flushPool();
-  server.close(() => process.exit(0));
-});
+/**
+ * 退出前把节流中的用量统计与号池状态落盘。
+ * 原先 /admin/shutdown（桌面版每次停止 / 重启 / 退出都走它）直接 process.exit，
+ * 最近几秒的用量与账号成功 / 失败标记会丢失。
+ */
+function shutdown(code = 0) {
+  try { flushUsage(); } catch (e) { error('保存用量统计失败：', e.message); }
+  try { flushPool(); } catch (e) { error('保存账号池失败：', e.message); }
+  process.exit(code);
+}
+
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => {
+    log('收到退出信号，正在保存用量统计并关闭服务');
+    server.close(() => shutdown(0));
+    // 流式长连接可能迟迟不关，最多等 3 秒
+    setTimeout(() => shutdown(0), 3000).unref();
+  });
+}
 process.on('unhandledRejection', (e) => error('未处理的 Promise 异常：', e));

@@ -8,7 +8,7 @@
 // 设计原则：只新增，不改动 /v1/chat/completions 的任何既有行为。
 import { resolveTarget } from './router.mjs';
 import { openRoutedChat } from './routed-chat.mjs';
-import { openChat, openChatRotating, classifyFrame, upstreamErrorMessage } from './upstream.mjs';
+import { aggregateFrames, classifyFrame, upstreamErrorMessage } from './upstream.mjs';
 import { recordUsage } from './usage.mjs';
 import { startSSE, writeSSEEvent, sendJson, sendError, estimateTokens } from './util.mjs';
 import { requestLog, warn } from './log.mjs';
@@ -244,7 +244,9 @@ function toUsage(u) {
 export async function handleResponses(ctx) {
   const { cfg, res, body, signal } = ctx;
   const started = Date.now();
-  const wantsStream = body.stream !== false;
+  // 与 OpenAI 规范一致：stream 缺省为 false（Codex 总是显式传 true）。
+  // 原先缺省走流式，不传 stream 的 SDK 会收到 SSE 而解析失败。
+  const wantsStream = body.stream === true;
 
   // 先解析模型（保持与 chat 相同的路由语义：支持 site/model 前缀与别名）
   const target = await resolveTarget(cfg, body.model);
@@ -267,18 +269,18 @@ export async function handleResponses(ctx) {
 
   // ---------- 非流式 ----------
   if (!wantsStream) {
-    const { aggregateFrames } = await import('./upstream.mjs');
     let agg;
     try {
       agg = await aggregateFrames(up.frames);
     } catch (e) {
-      up.close();
+      requestLog({ site, model, mode: 'responses-json', status: e.status || 502, ms: Date.now() - started, note: 'aggregate_failed' });
       return sendError(res, e.status || 502, e.message);
     } finally {
       up.close();
     }
 
     const usage = toUsage(agg.usage);
+    requestLog({ site, model, mode: 'responses-json', status: 200, ms: Date.now() - started, tools: agg.toolCallList.length || undefined });
     recordUsage({
       site,
       model,
@@ -313,18 +315,44 @@ export async function handleResponses(ctx) {
     writeSSEEvent(res, type, JSON.stringify({ type, sequence_number: seq++, ...payload }));
 
   let finished = false;
+  let failed = null; // 上游错误信息；发出 response.failed 后不能再发 response.completed
   let contentChars = 0;
-  let contentText = ''; // 累积正文，供 output_text.done / response.completed 回填
-  let reasoningText = ''; // 累积推理内容
   let upstreamUsage = null;
-  let outputIndex = 0;
-  let textItemId = null;
-  let textOpened = false;
-  let textDone = false;
-  let reasoningItemId = null;
-  let reasoningOpened = false;
-  let reasoningDone = false;
-  const toolItems = new Map(); // index → { id, call_id, name, args }
+  // 每个输出项在「打开」时分配自己的 output_index，增量与收尾都用它，不再事后推算。
+  let nextIndex = 0;
+  const doneItems = []; // { index, item }：已收尾的输出项，response.completed 按 index 排序回填
+  let reasoning = null; // 当前打开的推理项 { id, index, text }
+  let text = null; // 当前打开的正文项 { id, index, text }
+  const toolItems = new Map(); // 上游 tool_call index → { id, call_id, name, args, index }
+
+  const closeReasoning = async () => {
+    if (!reasoning) return;
+    const r = reasoning;
+    reasoning = null;
+    const item = { type: 'reasoning', id: r.id, summary: [{ type: 'summary_text', text: r.text }] };
+    await emit('response.reasoning_summary_text.done', { item_id: r.id, output_index: r.index, summary_index: 0, text: r.text });
+    await emit('response.output_item.done', { output_index: r.index, item });
+    doneItems.push({ index: r.index, item });
+  };
+
+  const closeText = async () => {
+    if (!text) return;
+    const t = text;
+    text = null;
+    const part = { type: 'output_text', text: t.text, annotations: [] };
+    await emit('response.output_text.done', { item_id: t.id, output_index: t.index, content_index: 0, text: t.text });
+    await emit('response.content_part.done', { item_id: t.id, output_index: t.index, content_index: 0, part });
+    const item = { type: 'message', id: t.id, status: 'completed', role: 'assistant', content: [part] };
+    await emit('response.output_item.done', { output_index: t.index, item });
+    doneItems.push({ index: t.index, item });
+  };
+
+  const failWith = async (message) => {
+    failed = String(message || '上游错误');
+    const response = buildResponse({ id: responseId, model: requestModel, status: 'failed', output: [], usage: null });
+    response.error = { code: 'upstream_error', message: failed };
+    await emit('response.failed', { response });
+  };
 
   try {
     await emit('response.created', {
@@ -337,15 +365,7 @@ export async function handleResponses(ctx) {
     for await (const payload of up.frames) {
       const parsed = classifyFrame(payload);
       if (parsed.kind === 'error') {
-        await emit('response.failed', {
-          response: buildResponse({
-            id: responseId,
-            model: requestModel,
-            status: 'failed',
-            output: [],
-            usage: null,
-          }),
-        });
+        await failWith(parsed.message);
         break;
       }
       if (parsed.kind !== 'chunk') continue;
@@ -358,18 +378,18 @@ export async function handleResponses(ctx) {
       // 推理内容：作为 reasoning 项的增量。
       // Codex 要求增量前必须先 output_item.added，否则报 "ReasoningSummaryDelta without active item"。
       if (typeof delta.reasoning_content === 'string' && delta.reasoning_content) {
-        if (!reasoningOpened) {
-          reasoningItemId = rid('rs');
+        if (!reasoning) {
+          await closeText();
+          reasoning = { id: rid('rs'), index: nextIndex++, text: '' };
           await emit('response.output_item.added', {
-            output_index: outputIndex,
-            item: { type: 'reasoning', id: reasoningItemId, summary: [] },
+            output_index: reasoning.index,
+            item: { type: 'reasoning', id: reasoning.id, summary: [] },
           });
-          reasoningOpened = true;
         }
-        reasoningText += delta.reasoning_content;
+        reasoning.text += delta.reasoning_content;
         await emit('response.reasoning_summary_text.delta', {
-          item_id: reasoningItemId,
-          output_index: outputIndex,
+          item_id: reasoning.id,
+          output_index: reasoning.index,
           summary_index: 0,
           delta: delta.reasoning_content,
         });
@@ -377,72 +397,43 @@ export async function handleResponses(ctx) {
 
       // 正文
       if (typeof delta.content === 'string' && delta.content) {
-        if (!textOpened) {
-          // 正文开始前，先把 reasoning 项收尾并让出 output_index
-          if (reasoningOpened && !reasoningDone) {
-            await emit('response.reasoning_summary_text.done', {
-              item_id: reasoningItemId,
-              output_index: outputIndex,
-              summary_index: 0,
-              text: reasoningText,
-            });
-            await emit('response.output_item.done', {
-              output_index: outputIndex,
-              item: { type: 'reasoning', id: reasoningItemId, summary: [{ type: 'summary_text', text: reasoningText }] },
-            });
-            reasoningDone = true;
-            outputIndex++;
-          }
-          textItemId = rid('msg');
+        if (!text) {
+          await closeReasoning();
+          text = { id: rid('msg'), index: nextIndex++, text: '' };
           await emit('response.output_item.added', {
-            output_index: outputIndex,
-            item: { type: 'message', id: textItemId, status: 'in_progress', role: 'assistant', content: [] },
+            output_index: text.index,
+            item: { type: 'message', id: text.id, status: 'in_progress', role: 'assistant', content: [] },
           });
           await emit('response.content_part.added', {
-            item_id: textItemId,
-            output_index: outputIndex,
+            item_id: text.id,
+            output_index: text.index,
             content_index: 0,
             part: { type: 'output_text', text: '', annotations: [] },
           });
-          textOpened = true;
         }
         contentChars += delta.content.length;
-        contentText += delta.content;
+        text.text += delta.content;
         await emit('response.output_text.delta', {
-          item_id: textItemId,
-          output_index: outputIndex,
+          item_id: text.id,
+          output_index: text.index,
           content_index: 0,
           delta: delta.content,
         });
       }
 
-      // 工具调用
+      // 工具调用：先收尾推理与正文。推理模型常见「思考 → 直接调工具」，
+      // 原先只在正文开始时收尾推理，推理项会和第一个工具项抢同一个 output_index。
       if (Array.isArray(delta.tool_calls) && delta.tool_calls.length) {
-        // 正文先收尾，工具项另起
-        if (textOpened && !textDone) {
-          await emit('response.output_text.done', { item_id: textItemId, output_index: outputIndex, content_index: 0, text: contentText });
-          await emit('response.content_part.done', {
-            item_id: textItemId,
-            output_index: outputIndex,
-            content_index: 0,
-            part: { type: 'output_text', text: contentText, annotations: [] },
-          });
-          await emit('response.output_item.done', {
-            output_index: outputIndex,
-            item: { type: 'message', id: textItemId, status: 'completed', role: 'assistant', content: [] },
-          });
-          outputIndex++;
-          textDone = true;
-        }
-
+        await closeReasoning();
+        await closeText();
         for (const tc of delta.tool_calls) {
-          const idx = Number.isInteger(tc.index) ? tc.index : 0;
-          let cur = toolItems.get(idx);
+          const key = Number.isInteger(tc.index) ? tc.index : 0;
+          let cur = toolItems.get(key);
           if (!cur) {
-            cur = { id: rid('fc'), call_id: tc.id || rid('call'), name: tc.function?.name || '', args: '' };
-            toolItems.set(idx, cur);
+            cur = { id: rid('fc'), call_id: tc.id || rid('call'), name: tc.function?.name || '', args: '', index: nextIndex++ };
+            toolItems.set(key, cur);
             await emit('response.output_item.added', {
-              output_index: outputIndex + idx,
+              output_index: cur.index,
               item: {
                 type: 'function_call',
                 id: cur.id,
@@ -458,7 +449,7 @@ export async function handleResponses(ctx) {
             cur.args += tc.function.arguments;
             await emit('response.function_call_arguments.delta', {
               item_id: cur.id,
-              output_index: outputIndex + idx,
+              output_index: cur.index,
               delta: tc.function.arguments,
             });
           }
@@ -466,119 +457,57 @@ export async function handleResponses(ctx) {
       }
     }
 
-    // 正文收尾
-    if (textOpened && !textDone) {
-      await emit('response.output_text.done', { item_id: textItemId, output_index: outputIndex, content_index: 0, text: contentText });
-      await emit('response.content_part.done', {
-        item_id: textItemId,
-        output_index: outputIndex,
-        content_index: 0,
-        part: { type: 'output_text', text: contentText, annotations: [] },
-      });
-      await emit('response.output_item.done', {
-        output_index: outputIndex,
-        item: {
-          type: 'message',
-          id: textItemId,
-          status: 'completed',
-          role: 'assistant',
-          content: [{ type: 'output_text', text: contentText, annotations: [] }],
-        },
-      });
-      outputIndex++;
-      textDone = true;
-    }
-
-    // 工具项收尾
-    const finalOutput = [];
-
-    // 兜底：若从未出现正文，reasoning 项可能仍处于打开状态，先收尾
-    if (reasoningOpened && !reasoningDone) {
-      await emit('response.reasoning_summary_text.done', {
-        item_id: reasoningItemId,
-        output_index: outputIndex,
-        summary_index: 0,
-        text: reasoningText,
-      });
-      await emit('response.output_item.done', {
-        output_index: outputIndex,
-        item: { type: 'reasoning', id: reasoningItemId, summary: [{ type: 'summary_text', text: reasoningText }] },
-      });
-      reasoningDone = true;
-      finalOutput.push({
-        type: 'reasoning',
-        id: reasoningItemId,
-        summary: [{ type: 'summary_text', text: reasoningText }],
-      });
-      outputIndex++;
-    }
-
-    if (textOpened) {
-      finalOutput.push({
-        type: 'message',
-        id: textItemId,
-        status: 'completed',
-        role: 'assistant',
-        content: [{ type: 'output_text', text: contentText, annotations: [] }],
-      });
-    }
-    for (const [, cur] of [...toolItems.entries()].sort((a, b) => a[0] - b[0])) {
-      await emit('response.function_call_arguments.done', {
-        item_id: cur.id,
-        output_index: outputIndex,
-        arguments: cur.args,
-      });
-      await emit('response.output_item.done', {
-        output_index: outputIndex,
-        item: {
+    if (!failed) {
+      await closeReasoning();
+      await closeText();
+      for (const [, cur] of [...toolItems.entries()].sort((a, b) => a[0] - b[0])) {
+        const item = {
           type: 'function_call',
           id: cur.id,
           call_id: cur.call_id,
           name: cur.name,
           arguments: cur.args,
           status: 'completed',
-        },
+        };
+        await emit('response.function_call_arguments.done', { item_id: cur.id, output_index: cur.index, arguments: cur.args });
+        await emit('response.output_item.done', { output_index: cur.index, item });
+        doneItems.push({ index: cur.index, item });
+      }
+
+      finished = true;
+      await emit('response.completed', {
+        response: buildResponse({
+          id: responseId,
+          model: requestModel,
+          status: 'completed',
+          output: doneItems.sort((a, b) => a.index - b.index).map((d) => d.item),
+          usage: toUsage(upstreamUsage),
+        }),
       });
-      finalOutput.push({
-        type: 'function_call',
-        id: cur.id,
-        call_id: cur.call_id,
-        name: cur.name,
-        arguments: cur.args,
-        status: 'completed',
-      });
-      outputIndex++;
     }
-
-    const usage = toUsage(upstreamUsage);
-    finished = true;
-
-    await emit('response.completed', {
-      response: buildResponse({
-        id: responseId,
-        model: requestModel,
-        status: 'completed',
-        output: finalOutput,
-        usage,
-      }),
-    });
   } catch (e) {
     warn(`[${site}] Responses 流式转换异常：${e?.message || e}`);
+    // 客户端还在时要明确告知失败，否则 Codex 只能报「流在 response.completed 之前断开」
+    if (!failed && !finished && !signal?.aborted && !res.writableEnded) {
+      await failWith(e?.message || String(e)).catch(() => {});
+    }
   } finally {
     up.close();
     if (!res.writableEnded) res.end();
+    const status = finished ? 200 : failed ? 502 : 499;
     requestLog({
       site,
       model,
       mode: 'responses',
-      status: finished ? 200 : 499,
+      status,
       ms: Date.now() - started,
+      note: failed ? 'upstream_error' : undefined,
     });
     recordUsage({
       site,
       model,
       mode: 'responses',
-      status: finished ? 200 : 499,
+      status,
       promptTokens: upstreamUsage?.prompt_tokens ?? estimateTokens(JSON.stringify(chatReq.messages || [])),
       completionTokens: upstreamUsage?.completion_tokens ?? estimateTokens('x'.repeat(contentChars)),
       credit: upstreamUsage?.credit ?? 0,
