@@ -422,6 +422,7 @@
         <b>当前选择：</b><span id="curDefault" class="pill ok"></span>
         <span class="grow"></span>
         <input id="modelFilter" placeholder="搜索模型 ID / 名称" style="width:220px" oninput="renderModels()" />
+        <button class="btn" onclick="loadModels(true)">刷新目录与价格</button>
         <button class="btn" id="probeBtn" onclick="probeVisible()">检查这些模型（可能消耗额度）</button>
       </div>
       <p class="hint">一个模型可能在多个账号渠道出现。“使用该渠道”会固定到该行渠道；“调整使用规则”可以设置失败后换到哪里。带 <span class="pill free">免费</span> 的是官方目录标注免费。<br>
@@ -718,8 +719,8 @@ async function loadState() {
 }
 
 // ---------- 模型 ----------
-async function loadModels() {
-  MODELS = await api('/models');
+async function loadModels(force = false) {
+  MODELS = await api('/models' + (force ? '?refresh=1' : ''));
   ALIASES = MODELS.aliases || {};
   $('curDefault').textContent = MODELS.default_model;
   $('defmodel').innerHTML = `当前选择 <b>${esc(friendlyModel(MODELS.default_model.split('/').at(-1)))}</b>`;
@@ -727,6 +728,7 @@ async function loadModels() {
 }
 
 function multText(m) {
+  if (m.catalog_credits && ['inactive-promotion','stale-zero'].includes(m.price_status)) return `<span class="pill">目录 ${esc(m.catalog_credits)}</span>`;
   if (m.free) return '<span class="pill free">免费 x0.00</span>';
   if (m.credits) return `<span class="pill paid">${esc(m.credits)}</span>`;
   if (m.multiplier !== null) return `<span class="pill paid">x${m.multiplier}</span>`;
@@ -742,7 +744,7 @@ function renderModels() {
     return `<tr>
       <td><code>${esc(m.id)}</code>${m.alias_of ? ` <span class="pill">→${esc(m.alias_of)}</span>` : ''}${m.pending_login ? ' <span class="pill">未登录</span>' : ''}</td>
       <td>${esc(friendlySite(m.site))}</td>
-      <td>${multText(m)}<div class="muted" style="font-size:11px">${esc(m.price_note || '')}</div></td>
+      <td>${multText(m)}<div class="muted" style="font-size:11px">${esc(m.price_note || '')}</div>${m.price_updated_at ? `<div class="muted" style="font-size:11px">${m.catalog_source === 'upstream(cache)' ? '缓存' : '更新'}：${esc(new Date(m.price_updated_at).toLocaleString('zh-CN'))}</div>` : ''}</td>
       <td>${m.context ? Math.round(m.context / 1000) + 'k' : '—'}</td>
       <td class="muted">${esc(m.name || '')}<div style="font-size:11px">${esc(m.availability_note || '')}</div></td>
       <td class="probe-cell" data-id="${esc(m.id)}" data-site="${esc(m.site)}">—</td>

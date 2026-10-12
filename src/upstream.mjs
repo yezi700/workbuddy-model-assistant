@@ -8,6 +8,8 @@ import { markSuccess, markFailure, isQuotaError, usableCount, pickAccount, getAc
 import { fitMessages, estimateMessages, learnedLimit, isTooLongError } from './compress.mjs';
 import { chatHeaders, billingHeaders } from './headers.mjs';
 import { warn } from './log.mjs';
+import { normalizeModelCatalog } from './model-prices.mjs';
+import { catalogIdentity } from './catalog-cache.mjs';
 
 /**
  * 上游对 system 消息做「客户端指纹」精确匹配，命中就回：
@@ -479,44 +481,27 @@ function fetchWithTimeout(url, { timeoutMs, ...init } = {}) {
 /** 拉取站点可用模型清单（含积分倍率）。 */
 export async function fetchModels(cfg, site) {
   const siteCfg = cfg.sites[site];
-  await ensureToken(cfg, site);
-  const auth = getAuth(site);
+  const {accountId}=await ensureToken(cfg, site);
+  const auth = getAccount(site,accountId) || getAuth(site);
   const timeoutMs = cfg.timeouts?.metaMs ?? 30000;
-  let res, text;
-  try {
-    const r = await fetchWithTimeout(siteCfg.apiBase + '/console/enterprises/personal/models', {
-      timeoutMs,
+  const endpoints=site==='intl-work' ? ['/v2/enterprises/personal/models','/console/enterprises/personal/models'] : ['/console/enterprises/personal/models','/v2/enterprises/personal/models'];
+  const deadline=Date.now()+timeoutMs;
+  let lastError;
+  for (const endpoint of endpoints) {
+    try {
+      const r = await fetchWithTimeout(siteCfg.apiBase + endpoint, {
+      timeoutMs:Math.max(1,deadline-Date.now()),
       headers: { ...chatHeaders(siteCfg, auth), Accept: 'application/json' },
-    });
-    res = r.res;
-    text = await r.text();
-  } catch (e) {
-    throw new UpstreamError(`[${site}] 模型接口请求失败（${describeFetchFailure(e, timeoutMs)}）`, { status: 504, transport: true, site });
+      });
+      const text=await r.text();
+      if(r.res.status!==200)throw new Error(`HTTP ${r.res.status}`);
+      const list=normalizeModelCatalog(JSON.parse(text));
+      Object.defineProperty(list,'catalogKey',{value:catalogIdentity(cfg,site,auth)});
+      return list;
+    }catch(e){lastError=e;if(Date.now()>=deadline)break;}
   }
-  if (res.status !== 200) throw new UpstreamError(`[${site}] 模型接口 HTTP ${res.status}：${text.slice(0, 200)}`, { status: res.status, site });
-  let json;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    throw new UpstreamError(`[${site}] 模型接口返回无法解析（HTTP ${res.status}）`, { status: 502, site });
-  }
-  if (json.code !== 0) throw new UpstreamError(`[${site}] 模型接口 code=${json.code}：${String(json.msg || '').slice(0, 200)}`, { status: 502, site });
-  const models = json.data?.models || [];
-  const agents = json.data?.agents || [];
-  const cli = agents.find((a) => a.name === 'cli');
-  const cliIds = cli?.models?.length ? new Set(cli.models) : null;
-  return models
-    .filter((m) => !m.disabled && (!cliIds || cliIds.has(m.id)))
-    .map((m) => ({
-      id: m.id,
-      name: m.name || m.id,
-      credits: m.credits || null, // 积分倍率，如 "x0.79 credits"；x0.00 表示不扣积分
-      contextWindow: m.maxInputTokens || null,
-      maxTokens: m.maxOutputTokens || null,
-      supportsImages: Boolean(m.supportsImages),
-      supportsToolCall: Boolean(m.supportsToolCall),
-      supportsReasoning: Boolean(m.supportsReasoning),
-    }));
+  const timedOut=Date.now()>=deadline;
+  throw new UpstreamError(`[${site}] 模型目录读取失败：${describeFetchFailure(lastError,timeoutMs)}`,{status:timedOut ? 504 : 502,transport:timedOut,site});
 }
 
 /**

@@ -1,10 +1,12 @@
 // 站点路由：把「模型名」映射到「哪个站点 + 该站点上的模型 ID」。
 // 规则优先级：显式站点前缀 → 别名 → config.modelRoutes → 站点目录匹配（倍率最低优先） → 默认站点。
 import { siteKeys } from './config.mjs';
-import { isLoggedIn } from './auth.mjs';
+import { isLoggedIn, getAuth } from './auth.mjs';
 import { fetchModels } from './upstream.mjs';
 import { learnLimit } from './compress.mjs';
 import { policyFor, preferredSite, routeCandidates } from './routing-policy.mjs';
+import {catalogIdentity, readCatalogCache, writeCatalogCache} from './catalog-cache.mjs';
+import {cachedPriceModels} from './model-prices.mjs';
 
 const TTL_OK = 5 * 60 * 1000;
 const TTL_ERR = 60 * 1000;
@@ -69,7 +71,8 @@ export async function getCatalog(cfg, site, { force = false } = {}) {
     return entry;
   }
   const cached = catalogs.get(site);
-  if (!force && cached && Date.now() - cached.at < cached.ttl) return cached;
+  const key=catalogIdentity(cfg,site,getAuth(site));
+  if (!force && cached?.key===key && Date.now() - cached.at < cached.ttl && [...cached.models.values()].every(m=>!m.priceExpiresAt || Date.now()<m.priceExpiresAt)) return cached;
   const 过滤 = (list) =>
     new Map(list.filter((m) => !isExcluded(cfg, site, m.id)).map((m) => [m.id, m]));
   /** 目录里带 maxInputTokens 的模型，顺手登记进「上下文上限」表供压缩用。 */
@@ -81,14 +84,19 @@ export async function getCatalog(cfg, site, { force = false } = {}) {
   try {
     const list = await fetchModels(cfg, site);
     登记上限(list);
-    const entry = { at: Date.now(), ttl: TTL_OK, models: 过滤(list), error: null, source: 'upstream' };
+    const fetchedAt=Date.now();
+    const actualKey=list.catalogKey || key;
+    const entry = { key:actualKey,at: fetchedAt,fetchedAt, ttl: TTL_OK, models: 过滤(list), error: null, source: 'upstream' };
+    try{writeCatalogCache(actualKey,{fetchedAt,models:list});}catch{/* 缓存写入失败不阻断官方目录。 */}
     catalogs.set(site, entry);
     return entry;
   } catch (e) {
-    const prev = catalogs.get(site);
+    const memory=catalogs.get(site);
+    const disk=readCatalogCache(key);
+    const prev=memory?.key===key && memory.source?.startsWith('upstream') ? memory : disk ? {models:new Map(disk.models.map(m=>[m.id,m])),source:'upstream(cache)',fetchedAt:disk.fetchedAt} : null;
     // 之前成功拉过动态目录 → 继续用缓存，避免被内置清单覆盖
     if (prev?.source?.startsWith('upstream') && prev.models.size) {
-      const entry = { at: Date.now(), ttl: TTL_ERR, models: prev.models, error: e.message, source: 'upstream(cache)' };
+      const entry = { key,at: Date.now(), fetchedAt:prev.fetchedAt,ttl: TTL_ERR, models: 过滤(cachedPriceModels([...prev.models.values()])), error: e.message, source: 'upstream(cache)' };
       catalogs.set(site, entry);
       return entry;
     }
@@ -97,6 +105,7 @@ export async function getCatalog(cfg, site, { force = false } = {}) {
     登记上限(seed);
     const models = 过滤(seed.map((m) => ({ ...m, seed: true })));
     const entry = {
+      key,
       at: Date.now(),
       ttl: models.size ? TTL_ERR : TTL_OK,
       models,

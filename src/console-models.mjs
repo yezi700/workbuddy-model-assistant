@@ -18,8 +18,10 @@ export async function consoleModels(cfg, { includeLoggedOut = true, loggedIn, ge
         credits, multiplier: Number.isFinite(mult) ? mult : null, free: logged && mult === 0,
         context: info.contextWindow || null, max_output: info.maxTokens || null,
         pending_login: !logged, selectable: logged, catalog_source: cat.source,
+        catalog_credits: info.catalogCredits || null,price_status:info.priceStatus || null,
+        price_updated_at:cat.fetchedAt ? new Date(cat.fetchedAt).toISOString() : null,
         availability_note: !logged ? '未登录，暂不可调用' : info.reference ? '参考清单，当前账号可用性未验证' : '来自该渠道的官方目录',
-        price_note: !logged ? '未登录，未查询费用' : credits != null ? (cat.source === 'upstream(cache)' ? '上次官方目录缓存，实际费用以上游为准' : '来自官方模型目录') : info.reference || cat.source === 'seed' ? '参考清单无可靠价格，不能视为免费' : '上游未提供价格，不能视为免费',
+        price_note: !logged ? '未登录，未查询费用' : info.priceNote || (credits != null ? (cat.source === 'upstream(cache)' ? '上次官方目录缓存，实际费用以上游为准' : '来自官方模型目录') : info.reference || cat.source === 'seed' ? '当前官方目录未列出，费用未确认' : '上游未提供价格，不能视为免费'),
       });
     }
   }
