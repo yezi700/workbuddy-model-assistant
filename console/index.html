@@ -421,12 +421,11 @@
       <div class="row">
         <b>当前选择：</b><span id="curDefault" class="pill ok"></span>
         <span class="grow"></span>
-        <label class="hint"><input type="checkbox" id="showLoggedOut" onchange="loadModels()" /> 显示未登录渠道</label>
         <input id="modelFilter" placeholder="搜索模型 ID / 名称" style="width:220px" oninput="renderModels()" />
         <button class="btn" id="probeBtn" onclick="probeVisible()">检查这些模型（可能消耗额度）</button>
       </div>
       <p class="hint">一个模型可能在多个账号渠道出现。“使用该渠道”会固定到该行渠道；“调整使用规则”可以设置失败后换到哪里。带 <span class="pill free">免费</span> 的是官方目录标注免费。<br>
-      注意：目录来自各站点实时接口，国际版控制台接口不稳定时会用内置清单兜底，内置清单不含可靠价格，价格未知不能视为免费。默认只显示已登录渠道。</p>
+      注意：目录来自各站点实时接口，国际版控制台接口不稳定时会用内置清单兜底，内置清单不含可靠价格，价格未知不能视为免费。两个渠道的目录始终显示，未登录时不能调用。参考清单不代表账号权限，实际可用模型可能随版本和套餐变化。</p>
       <div class="table-wrap" style="max-height:62vh"><table id="modelTable"><thead><tr>
         <th>模型名称</th><th>账号渠道</th><th>费用信息</th><th>可处理长度</th><th>模型说明</th><th>检查结果</th><th></th>
       </tr></thead><tbody></tbody></table></div>
@@ -600,7 +599,7 @@ const askConfirm = message => askDialog(message, '', false);
 const askText = (message, value = '', secret = false) => askDialog(message, value, true, secret);
 
 
-const friendlySite = id => ({'cn-cli':'国内版','intl-cli':'国际版 CodeBuddy','intl-work':'国际版 WorkBuddy'}[id] || id || '尚未确定');
+const friendlySite = id => ({'cn-cli':'国内版WorkBuddy','intl-work':'国际版WorkBuddy AI'}[id] || id || '尚未确定');
 const friendlyModel = id => ({'hy4-preview':'Hy4 Preview','deepseek-v4.1-flash':'DeepSeek V4.1','step-5-preview':'Step-5 Preview'}[id] || id || '尚未选择');
 function showTab(name) { document.querySelector(`nav button[data-tab="${name}"]`)?.click(); }
 async function refreshHomeStatus() {
@@ -630,7 +629,7 @@ function renderHome() {
     const selected = currentRaw === p.model;
     const enabled = !paused && loggedIn;
     const fallback = p.fallbackMode === 'off' ? [] : p.fallbackSites.filter(s => s !== site);
-    const about = p.model === 'deepseek-v4.1-flash' ? '使用国际版 WorkBuddy。免费活动与权限以你的账号为准。' : p.model === 'step-5-preview' ? '国内版优先，失败后可尝试已指定的国际版。' : p.model === 'hy4-preview' ? '先确认当前夜间活动，再启用时间规则。' : '按你保存的使用规则调用。';
+    const about = p.model === 'deepseek-v4.1-flash' ? '使用国际版WorkBuddy AI。免费活动与权限以你的账号为准。' : p.model === 'step-5-preview' ? '国内版WorkBuddy优先，失败后可尝试已指定的国际版WorkBuddy AI。' : p.model === 'hy4-preview' ? '先确认当前夜间活动，再启用时间规则。' : '按你保存的使用规则调用。';
     const status = !p.enabled ? '规则已停用' : paused ? '当前不在允许时段' : !loggedIn ? '需要先登录' : selected ? '当前选择' : '账号已登录';
     return `<article class="card quick-model ${selected ? 'selected' : ''}"><div class="row"><h4>${esc(friendlyModel(p.model))}</h4><span class="grow"></span><span class="pill ${paused ? 'warn' : selected ? 'ok' : ''}">${status}</span></div><p class="description">${esc(about)}</p><div class="model-facts"><p>使用账号：<b>${esc(friendlySite(site))}</b></p><p>失败后：${fallback.length ? '尝试 ' + esc(fallback.map(friendlySite).join(' → ')) : '同渠道换号，仍失败就停止'}</p>${p.schedule.enabled ? `<p>允许时间：${esc(p.schedule.start)}–次日 ${esc(p.schedule.end)}（北京时间）</p><p>活动至 ${esc(p.schedule.endDate || '未设置结束日期')} 的最后一晚</p>` : ''}</div><button class="btn ${selected ? '' : 'primary'}" data-use-model="${i}" ${!enabled || selected ? 'disabled' : ''}>${paused ? '暂时不能使用' : !loggedIn ? '请先登录对应账号' : selected ? '正在使用这个模型' : '使用 ' + esc(friendlyModel(p.model))}</button>${!loggedIn && !paused ? '<button class="btn" style="margin-top:8px" data-home-login="1">去登录账号</button>' : ''}</article>`;
   }).join('') || '<div class="card">还没有常用模型规则。<button class="btn" onclick="showTab(\'routing\')">去添加使用规则</button></div>';
@@ -720,7 +719,7 @@ async function loadState() {
 
 // ---------- 模型 ----------
 async function loadModels() {
-  MODELS = await api('/models' + ($('showLoggedOut').checked ? '?include_logged_out=1' : ''));
+  MODELS = await api('/models');
   ALIASES = MODELS.aliases || {};
   $('curDefault').textContent = MODELS.default_model;
   $('defmodel').innerHTML = `当前选择 <b>${esc(friendlyModel(MODELS.default_model.split('/').at(-1)))}</b>`;
@@ -745,7 +744,7 @@ function renderModels() {
       <td>${esc(friendlySite(m.site))}</td>
       <td>${multText(m)}<div class="muted" style="font-size:11px">${esc(m.price_note || '')}</div></td>
       <td>${m.context ? Math.round(m.context / 1000) + 'k' : '—'}</td>
-      <td class="muted">${esc(m.name || '')}</td>
+      <td class="muted">${esc(m.name || '')}<div style="font-size:11px">${esc(m.availability_note || '')}</div></td>
       <td class="probe-cell" data-id="${esc(m.id)}" data-site="${esc(m.site)}">—</td>
       <td>${!m.selectable ? '<span class="pill">请先登录</span>' : isDef ? '<span class="pill ok">当前默认</span>' : `<button class="btn model-select" data-model="${esc(m.id)}" data-site="${esc(m.site)}">使用该渠道</button>`} <button class="btn route-edit" data-model="${esc(m.alias_of || m.id.split('/').slice(1).join('/') || m.id)}" data-site="${esc(m.site)}">调整使用规则</button></td>
     </tr>`;
@@ -922,7 +921,7 @@ function acctStatusPill(a) {
 
 function renderAccounts() {
   if (!STATE) return;
-  $('accountCards').innerHTML = '<p class="hint" style="grid-column:1/-1">同一国际账号的 CodeBuddy 与 WorkBuddy 共用 Buddy AI 权益和 Credits。两处余额不能相加；切换产品不能补充额度。渠道授权、模型目录和免费活动分别确认，退出一个渠道不会退出另一个。</p>' + STATE.sites.map((s) => {
+  $('accountCards').innerHTML = '<p class="hint" style="grid-column:1/-1">国内版WorkBuddy和国际版WorkBuddy AI分别登录、分别确认额度与免费活动。模型目录持续显示；未登录渠道暂不可调用。</p>' + STATE.sites.map((s) => {
     const accounts = s.accounts || [];
     const 概览 = accounts.length
       ? `${accounts.length} 个账号，${s.account_usable || 0} 个可用`

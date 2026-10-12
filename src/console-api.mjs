@@ -186,7 +186,7 @@ export async function handleConsoleApi(ctx) {
   // ---- 模型清单（含 default 虚拟模型） ----
   if (p === '/models' && method === 'GET') {
     // 控制台逐站点展示；API 客户端模型清单仍按原逻辑合并。
-    const list = await consoleModels(cfg, { includeLoggedOut: url.searchParams.get('include_logged_out') === '1', loggedIn: isLoggedIn, getCatalog });
+    const list = await consoleModels(cfg, { loggedIn: isLoggedIn, getCatalog });
     return sendJson(res, 200, {
       default_model: cfg.defaultModel,
       default_site: cfg.defaultSite,

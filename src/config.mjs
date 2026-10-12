@@ -563,6 +563,7 @@ function loadConfigFrom(dir) {
   const cfg = deepMerge(merged, raw);
   delete cfg.upstream; // 已迁移到 sites
   lastIssues = validateConfig(cfg);
+  if (cfg.workbuddyOnly === true) delete cfg.sites['intl-cli'];
   cfg.routingPolicies = validatePolicies(cfg.routingPolicies, cfg.sites);
   if (!['off', 'freeOnly', 'listed'].includes(cfg.routing?.fallbackMode)) throw new Error('routing.fallbackMode 无效');
   return cfg;

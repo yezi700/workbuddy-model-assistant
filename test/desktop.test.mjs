@@ -7,6 +7,17 @@ import {createRequire} from 'node:module';
 const require=createRequire(import.meta.url);
 const {initData,importData}=require('../desktop/data.cjs');
 const {ProxyService}=require('../desktop/service.cjs');
+const {normalizeChannels}=require('../desktop/channels.cjs');
+
+test('两渠道迁移移除国际 CodeBuddy，保留密钥并迁移模型路由，不复制价格',()=>{
+  const cfg=normalizeChannels({apiKey:'test-key',port:8788,defaultSite:'intl-cli',defaultModel:'intl-cli/m',sites:{'intl-cli':{},'intl-work':{seedModels:[{id:'m',credits:'x0.00'}]}},modelAliases:{m:'intl-cli/m'},modelRoutes:{m:'intl-cli'},routingPolicies:[{site:'intl-cli',fallbackSites:['intl-cli','intl-work'],schedule:{site:'intl-cli'}}]});
+  assert.deepEqual(Object.keys(cfg.sites).sort(),['cn-cli','intl-work']);
+  assert.equal(cfg.apiKey,'test-key');assert.equal(cfg.port,8788);
+  assert.equal(cfg.defaultModel,'intl-work/m');assert.equal(cfg.modelAliases.m,'intl-work/m');
+  assert.deepEqual(cfg.routingPolicies[0].fallbackSites,['intl-work']);
+  assert.equal(cfg.sites['intl-work'].seedModels.find(m=>m.id==='m').credits,null);
+  assert.ok(cfg.sites['intl-work'].seedModels.length>=24);
+});
 test('每个桌面用户生成独立密钥，默认限时活动不启用',t=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'wb-desktop-data-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
   initData(path.join(dir,'a'));initData(path.join(dir,'b'));
