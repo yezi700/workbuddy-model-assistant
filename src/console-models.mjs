@@ -17,7 +17,7 @@ export async function consoleModels(cfg, { includeLoggedOut = true, loggedIn, ge
       data.push({ id: `${site}/${info.id}`, site, name: info.name || info.id,
         credits, multiplier: Number.isFinite(mult) ? mult : null, free: logged && mult === 0,
         context: info.contextWindow || null, max_output: info.maxTokens || null,
-        pending_login: !logged, selectable: logged, catalog_source: cat.source,
+        pending_login: !logged, selectable: logged && !cfg.blockedRoutingModels?.[info.id], blocked_reason:cfg.blockedRoutingModels?.[info.id] || null, catalog_source: cat.source,
         catalog_credits: info.catalogCredits || null,price_status:info.priceStatus || null,
         price_updated_at:cat.fetchedAt ? new Date(cat.fetchedAt).toISOString() : null,
         availability_note: !logged ? '未登录，暂不可调用' : info.reference ? '参考清单，当前账号可用性未验证' : '来自该渠道的官方目录',

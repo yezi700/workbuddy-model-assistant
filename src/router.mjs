@@ -174,6 +174,7 @@ async function computeFallback(cfg, 首选站点, 目标模型) {
  */
 export async function resolveTarget(cfg, requestedModel) {
   const target = await resolveTargetInner(cfg, requestedModel);
+  if(cfg.blockedRoutingModels?.[target.model])throw Object.assign(new Error(`${target.model} 的费用或时段保护规则损坏，已暂停调用：${cfg.blockedRoutingModels[target.model]}。请在使用规则中保存有效规则。`),{status:403});
   try {
     await getCatalog(cfg, target.site);
   } catch {

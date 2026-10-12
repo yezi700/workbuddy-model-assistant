@@ -1,4 +1,5 @@
 const fs=require('node:fs');
+const {writeFileAtomic}=require('../src/atomic.cjs');
 const path=require('node:path');
 const crypto=require('node:crypto');
 const {normalizeChannels}=require('./channels.cjs');
@@ -16,7 +17,7 @@ function initData(dir) {
     if(existing.channelLayoutVersion===2)return;
     const backup=path.join(dir,'backups','before-workbuddy-channels-'+Date.now());
     fs.mkdirSync(backup,{recursive:true});fs.copyFileSync(file,path.join(backup,'config.json'));
-    fs.writeFileSync(file,JSON.stringify(normalizeChannels(existing),null,2)+'\n',{encoding:'utf8',mode:0o600});return;
+    writeFileAtomic(file,JSON.stringify(normalizeChannels(existing),null,2)+'\n',{encoding:'utf8',mode:0o600});return;
   }
   const basic={enabled:false,start:'',end:'',startDate:'',endDate:'',site:'cn-cli',timezone:'Asia/Shanghai',outside:'block'};
   const config={host:'127.0.0.1',port:8788,apiKey:'sk-wb-'+crypto.randomBytes(24).toString('hex'),defaultSite:'cn-cli',defaultModel:'step-5-preview',routing:{fallbackMode:'off'},routingPolicies:[
@@ -24,7 +25,7 @@ function initData(dir) {
     {model:'step-5-preview',site:'cn-cli',enabled:true,requireFree:true,fallbackMode:'freeOnly',fallbackSites:['cn-cli','intl-work'],schedule:basic},
     {model:'hy4-preview',site:'cn-cli',enabled:false,requireFree:true,fallbackMode:'off',fallbackSites:[],schedule:basic},
   ],sites:{'intl-work':{seedModels:[{id:'auto',name:'Auto'},{id:'deepseek-v4.1-flash',name:'DeepSeek V4.1 Flash'},{id:'step-5-preview',name:'Step-5 Preview'}]}}};
-  fs.writeFileSync(file,JSON.stringify(normalizeChannels(config),null,2)+'\n',{encoding:'utf8',mode:0o600});
+  writeFileAtomic(file,JSON.stringify(normalizeChannels(config),null,2)+'\n',{encoding:'utf8',mode:0o600});
 }
 function importData(source,destination) {
   const from=fs.realpathSync(source),to=path.resolve(destination);
@@ -43,8 +44,8 @@ function importData(source,destination) {
   for(const name of fs.readdirSync(to).filter(n=>n==='config.json' || /^auth.*\.json$/i.test(n))) {
     const file=path.join(to,name);if(fs.lstatSync(file).isFile()){fs.copyFileSync(file,path.join(backup,name));if(name!=='config.json')fs.unlinkSync(file);}
   }
-  fs.writeFileSync(path.join(to,'config.json'),JSON.stringify(config,null,2)+'\n',{encoding:'utf8',mode:0o600});
-  for(const {name,content} of files)fs.writeFileSync(path.join(to,name),content,{encoding:'utf8',mode:0o600});
+  writeFileAtomic(path.join(to,'config.json'),JSON.stringify(config,null,2)+'\n',{encoding:'utf8',mode:0o600});
+  for(const {name,content} of files)writeFileAtomic(path.join(to,name),content,{encoding:'utf8',mode:0o600});
   return {imported_accounts:files.length,backup_dir:backup};
 }
 module.exports={initData,importData};

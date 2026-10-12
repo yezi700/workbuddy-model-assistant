@@ -276,11 +276,11 @@ export function markSuccess(site, id) {
 /**
  * 记录一次失败。
  * status 用于区分处理方式：
- *   - 429/额度类：直接判定额度耗尽，长时间不再选它
+ *   - 确认额度不足：长时间不再选它；普通 429：按 Retry-After 短暂冷却
  *   - 401/403：凭证失效，需要重新登录
  *   - 5xx/网络：退避冷却，过一会儿还能用
  */
-export function markFailure(site, id, { status = 0, message = '' } = {}) {
+export function markFailure(site, id, { status = 0, message = '', retryAfterMs = null } = {}) {
   // 兼容模式只有一个账号，没有可轮换的对象；也不必为它建池文件
   if (!hasPoolFile(site)) return null;
   return mutate(site, (pool) => {
@@ -293,6 +293,9 @@ export function markFailure(site, id, { status = 0, message = '' } = {}) {
     if (isQuotaError(status, message)) {
       a.exhaustedAt = Date.now();
       a.cooldownUntil = null;
+    } else if (status===429) {
+      const wait=Number.isFinite(retryAfterMs) && retryAfterMs>0 ? retryAfterMs : 30000;
+      a.cooldownUntil=Date.now()+Math.max(1000,Math.min(wait,15*60*1000));
     } else {
       const step = COOLDOWN_STEPS_MS[Math.min(a.failCount, COOLDOWN_STEPS_MS.length - 1)];
       a.cooldownUntil = step ? Date.now() + step : null;
@@ -354,8 +357,9 @@ export function setAccountLabel(site, id, label) {
  */
 export function isQuotaError(status, message = '') {
   if (status === 402) return true;
-  if (status === 429) return true;
   const m = String(message || '');
+  if (/insufficient\s*(?:credits?|balance)|credits?\s*(?:exhausted|不足)|额度.*(?:不足|耗尽)|积分不足/i.test(m)) return true;
+  if (/rate[ _-]?limit|too many requests|requests per (?:minute|second)|限流|请求过于频繁|频率/i.test(m)) return false;
   // 「输入太长」与账号额度无关，换号也没用；不能被下面的 exceed / limit 关键词误判，
   // 否则一次超长请求会把池里每个账号都标成耗尽 6 小时。
   if (/too long|context[ _]?length|maximum context|max(?:imum)?[ _-]?(?:input[ _-]?)?tokens|tokens?\s*(?:>|\\u003e)/i.test(m)) return false;

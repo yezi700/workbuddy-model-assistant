@@ -213,7 +213,7 @@ describe('号池：状态与退避', () => {
   test('额度类错误 → 标记耗尽', () => {
     fresh();
     const a = pool.addAccount('cn-cli', acct(1), { label: 'A' });
-    pool.markFailure('cn-cli', a.id, { status: 429 });
+    pool.markFailure('cn-cli', a.id, { status: 429, message: 'insufficient credits' });
     assert.equal(pool.getAccount('cn-cli', a.id).exhaustedAt !== null, true);
     assert.equal(pool.isUsable(pool.getAccount('cn-cli', a.id)), false);
   });
@@ -247,7 +247,7 @@ describe('号池：状态与退避', () => {
   test('markSuccess 清掉失败计数、冷却与耗尽标记', () => {
     fresh();
     const a = pool.addAccount('cn-cli', acct(1), { label: 'A' });
-    pool.markFailure('cn-cli', a.id, { status: 429 });
+    pool.markFailure('cn-cli', a.id, { status: 429, message: 'insufficient credits' });
     pool.markFailure('cn-cli', a.id, { status: 500 });
     pool.markSuccess('cn-cli', a.id);
     const got = pool.getAccount('cn-cli', a.id);

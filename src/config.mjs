@@ -565,9 +565,13 @@ function loadConfigFrom(dir) {
   delete cfg.upstream; // 已迁移到 sites
   lastIssues = validateConfig(cfg);
   if (cfg.workbuddyOnly === true) delete cfg.sites['intl-cli'];
-  // 与上面的校验同一原则：坏掉的规则只丢弃该条并提示，不让整个服务起不来
+  // 与上面的校验同一原则：坏掉的规则保留供修复，并暂停对应模型；无法确定模型时拒绝启动
   // （原先任何一条规则不合法都会直接抛错，桌面版只能显示「代理启动失败」）。
-  cfg.routingPolicies = keepValidPolicies(cfg.routingPolicies, cfg.sites, lastIssues);
+  const validated = keepValidPolicies(cfg.routingPolicies, cfg.sites, lastIssues);
+  cfg.routingPolicies = validated.kept;
+  if (cfg.invalidRoutingPolicies !== undefined && !Array.isArray(cfg.invalidRoutingPolicies)) throw new Error('无效规则记录损坏，已停止启动以保护费用限制');
+  cfg.invalidRoutingPolicies = [...(cfg.invalidRoutingPolicies || []), ...validated.invalid];
+  cfg.blockedRoutingModels = blockedPolicyModels(cfg.invalidRoutingPolicies, cfg.sites);
   if (!['off', 'freeOnly', 'listed'].includes(cfg.routing?.fallbackMode)) {
     lastIssues.push(`routing.fallbackMode 无效（当前 ${JSON.stringify(cfg.routing?.fallbackMode)}），已回退为 off`);
     cfg.routing = { ...(isPlainObject(cfg.routing) ? cfg.routing : {}), fallbackMode: 'off' };
@@ -578,22 +582,36 @@ function loadConfigFrom(dir) {
 /** 逐条校验路由规则：整体合法时原样返回；否则保留能通过校验的规则，其余记入 issues。 */
 function keepValidPolicies(policies, sites, issues) {
   try {
-    return validatePolicies(policies, sites);
+    return { kept:validatePolicies(policies, sites), invalid:[] };
   } catch (e) {
     if (!Array.isArray(policies)) {
-      issues.push(`routingPolicies 无效（${e.message}），已回退为 []`);
-      return [];
+      throw new Error(`routingPolicies 无效（${e.message}），无法确定受影响模型，已停止启动以保护费用限制`);
     }
   }
   let kept = [];
-  for (const p of policies.slice(0, 100)) {
+  const invalid=[];
+  for (const p of policies) {
     try {
       kept = validatePolicies([...kept, p], sites);
     } catch (e) {
-      issues.push(`routingPolicies 中模型 ${JSON.stringify(p?.model ?? null)} 的规则无效（${e.message}），已忽略该条`);
+      invalid.push(p);
+      issues.push(`routingPolicies 中模型 ${JSON.stringify(p?.model ?? null)} 的规则无效（${e.message}），对应模型已暂停调用`);
     }
   }
-  return kept;
+  return {kept,invalid};
+}
+
+export function blockedPolicyModels(policies,sites) {
+  const blocked=Object.create(null);
+  for(const p of policies){
+    let model=typeof p?.model==='string' ? p.model.trim() : '';
+    if(model.includes('/') && sites[model.split('/')[0]])model=model.split('/').slice(1).join('/');
+    if(!model || model.includes('/') || model.length>160 || ['default','current'].includes(model.toLowerCase()))throw new Error('无法确定损坏规则对应的模型，已停止启动以保护费用限制');
+    let reason='存在冲突或损坏的路由规则';
+    try{validatePolicies([p],sites);}catch(e){reason=e.message;}
+    blocked[model]=reason;
+  }
+  return blocked;
 }
 
 export function saveConfig(cfg) {

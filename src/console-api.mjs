@@ -2,7 +2,7 @@
 // 仅本机可用（服务只监听 127.0.0.1），鉴权用控制台会话 token 或 config.json 的 apiKey。
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROOT, siteKeys, saveConfig, paths, authPathFor, authKeys, primaryKey } from './config.mjs';
+import { ROOT, siteKeys, saveConfig, paths, authPathFor, authKeys, primaryKey, blockedPolicyModels } from './config.mjs';
 import { getAuth, isLoggedIn, accountSnapshot } from './auth.mjs';
 import {
   poolPathFor,
@@ -12,6 +12,7 @@ import {
   setAccountLabel,
   resetAccountState,
   flushPool,
+  pickAccount,
 } from './pool.mjs';
 import { getCatalog, resolveTarget } from './router.mjs';
 import { consoleModels } from './console-models.mjs';
@@ -31,19 +32,23 @@ const loginStates = new Map(); // site → { state, authUrl, at }
  * 「账号登录」页的「刷新余额」走 /pool，不经过这里，仍然实时。
  */
 const CREDIT_TTL_MS = 60_000;
-const creditCache = new Map(); // site → { at, credit } | { at, error }
-async function cachedCredit(cfg, site) {
-  const hit = creditCache.get(site);
+const creditCache = new Map();
+function creditKey(cfg,site,accountId) {const a=getAccount(site,accountId)||{};return JSON.stringify([paths.root,site,accountId,a.uid,a.enterpriseId,cfg.sites[site]?.billingBase]);}
+function clearCreditCache(site){for(const [key,value] of creditCache)if(value.site===site)creditCache.delete(key);}
+function storeCredit(cfg,site,accountId,credit){if(creditCache.size>=256)creditCache.clear();creditCache.set(creditKey(cfg,site,accountId),{site,at:Date.now(),credit});}
+async function cachedCredit(cfg, site, accountId) {
+  const key=creditKey(cfg,site,accountId);
+  const hit = creditCache.get(key);
   if (hit && Date.now() - hit.at < CREDIT_TTL_MS) {
     if (hit.error) throw new Error(hit.error);
     return hit.credit;
   }
   try {
-    const credit = await queryCredit(cfg, site);
-    creditCache.set(site, { at: Date.now(), credit });
+    const credit = await queryCredit(cfg, site, accountId);
+    storeCredit(cfg,site,accountId,credit);
     return credit;
   } catch (e) {
-    creditCache.set(site, { at: Date.now(), error: e.message });
+    creditCache.set(key, { site,at: Date.now(), error: e.message });
     throw e;
   }
 }
@@ -79,6 +84,7 @@ async function siteSummary(cfg, site) {
   const accounts = accountSnapshot(site);
   return {
     site,
+    account_id:a.id || accounts.find(x=>x.uid===a.uid)?.id || pickAccount(site,{fallback:true})?.id || null,
     label: s.label,
     apiBase: s.apiBase,
     enabled: s.enabled !== false,
@@ -142,6 +148,8 @@ export async function handleConsoleApi(ctx) {
   if (p === '/routing' && method === 'GET') {
     return sendJson(res, 200, {
       policies: cfg.routingPolicies || [], routing: cfg.routing || { fallbackMode: 'freeOnly' }, pool: cfg.pool,
+      blocked_models: cfg.blockedRoutingModels || {},
+      invalid_policies:(cfg.invalidRoutingPolicies||[]).map(p=>({model:String(p.model).split('/').at(-1),site:cfg.sites[p.site]?p.site:cfg.defaultSite,enabled:true,requireFree:p.requireFree===true,fallbackMode:['off','freeOnly','listed'].includes(p.fallbackMode)?p.fallbackMode:'off',fallbackSites:Array.isArray(p.fallbackSites)?p.fallbackSites.filter(s=>cfg.sites[s]):[],schedule:Object.fromEntries(['enabled','start','end','startDate','endDate','site','timezone','outside'].map(k=>[k,p.schedule?.[k]]))})),
       sites: Object.entries(cfg.sites).map(([id, s]) => ({ id, label: s.label, enabled: s.enabled !== false, logged_in: isLoggedIn(id) })),
       active: (cfg.routingPolicies || []).map(r => { try { return { model: r.model, site: preferredSite(r), enabled: r.enabled !== false }; } catch (e) { return { model: r.model, blocked: e.message, enabled: r.enabled !== false }; } }),
     });
@@ -154,6 +162,9 @@ export async function handleConsoleApi(ctx) {
       const max = Number(b.pool?.maxAccountsPerRequest);
       if (!Number.isInteger(max) || max < 1 || max > 20) throw new Error('每次尝试账号数需为 1–20');
       cfg.routingPolicies = policies;
+      const repaired=new Set(policies.map(p=>p.model));
+      cfg.invalidRoutingPolicies=(cfg.invalidRoutingPolicies||[]).filter(p=>!repaired.has(String(p.model||'').split('/').at(-1)));
+      cfg.blockedRoutingModels=blockedPolicyModels(cfg.invalidRoutingPolicies,cfg.sites);
       cfg.routing = { fallbackMode: b.routing.fallbackMode };
       cfg.pool = { ...cfg.pool, maxAccountsPerRequest: max, switchSiteOnExhausted: b.pool.switchSiteOnExhausted === true };
       saveConfig(cfg);
@@ -176,7 +187,7 @@ export async function handleConsoleApi(ctx) {
       // 跳过查询而不是报错，前端会显示「—」。
       if (info.logged_in && supportsCreditQuery(cfg, s)) {
         try {
-          const credit = await cachedCredit(cfg, s);
+          const credit = await cachedCredit(cfg, s, info.account_id);
           info.credit = credit.remain;
           info.credit_detail = credit.detail;
           if (typeof credit.remain === 'number') recordBalance(s, credit.remain);
@@ -269,6 +280,7 @@ export async function handleConsoleApi(ctx) {
         if (!a.enabled) continue;
         try {
           const c = await queryCredit(cfg, site, a.id);
+          storeCredit(cfg,site,a.id,c);
           a.credit = c.remain;
           a.credit_detail = c.detail;
           if (typeof c.remain === 'number') recordBalance(`${site}/${a.label}`, c.remain);
@@ -289,7 +301,7 @@ export async function handleConsoleApi(ctx) {
     if (!cfg.sites[site]) return sendJson(res, 400, { error: `未知站点 ${site}` });
     if (!getAccount(site, id)) return sendJson(res, 404, { error: `账号不存在：${id}` });
 
-    creditCache.delete(site);
+    clearCreditCache(site);
     if (typeof body.enabled === 'boolean') setAccountEnabled(site, id, body.enabled);
     if (body.reset) resetAccountState(site, id);
     if (typeof body.label === 'string' && body.label.trim()) setAccountLabel(site, id, body.label.trim());
@@ -301,7 +313,7 @@ export async function handleConsoleApi(ctx) {
     const site = String(body.site || cfg.defaultSite);
     const id = String(body.id || '');
     if (!cfg.sites[site]) return sendJson(res, 400, { error: `未知站点 ${site}` });
-    creditCache.delete(site);
+    clearCreditCache(site);
     const ok = removeAccount(site, id);
     if (!ok) return sendJson(res, 404, { error: `账号不存在：${id}` });
     return sendJson(res, 200, { ok: true, remaining: accountSnapshot(site).length });
@@ -355,7 +367,7 @@ export async function handleConsoleApi(ctx) {
     const r = await pollLogin(cfg, site, st.state, { label: st.label || null });
     if (r.done) {
       loginStates.delete(site);
-      creditCache.delete(site);
+      clearCreditCache(site);
       return sendJson(res, 200, {
         done: true,
         account_id: r.auth.id,
@@ -378,7 +390,7 @@ export async function handleConsoleApi(ctx) {
     const site = String(body.site || '');
     if (!cfg.sites[site]) return sendJson(res, 400, { error: `未知站点 ${site}` });
     const id = body.id ? String(body.id) : null;
-    creditCache.delete(site);
+    clearCreditCache(site);
     if (id) {
       if (!getAccount(site, id)) return sendJson(res, 404, { error: `账号不存在：${id}` });
       removeAccount(site, id);

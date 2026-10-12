@@ -1,5 +1,6 @@
 const {app,BrowserWindow,Tray,Menu,nativeImage,utilityProcess,ipcMain,dialog,shell,Notification}=require('electron');
 const fs=require('node:fs');
+const {writeFileAtomic}=require('../src/atomic.cjs');
 const path=require('node:path');
 const {pathToFileURL}=require('node:url');
 const {ProxyService}=require('./service.cjs');
@@ -97,7 +98,7 @@ if(!app.requestSingleInstanceLock()){app.quit();}else{
     handle('open-data',()=>shell.openPath(dataDir));
     handle('startup',enabled=>{if(!app.isPackaged)throw new Error('安装或便携版才能设置开机启动');app.setLoginItemSettings({openAtLogin:enabled===true,path:startupExecutable});updateTray();return status();});
     // 停服后的步骤出错时也要把服务重新拉起来，否则代理会一直停着（finally 里重启）。
-    handle('port',async port=>{if(!Number.isInteger(port)||port<1024||port>65535)throw new Error('端口需为 1024–65535 的整数');await service.stop();try{const file=path.join(dataDir,'config.json');const c=JSON.parse(fs.readFileSync(file,'utf8'));c.port=port;fs.writeFileSync(file,JSON.stringify(c,null,2)+'\n');}finally{await perform('start');}return status();});
+    handle('port',async port=>{if(!Number.isInteger(port)||port<1024||port>65535)throw new Error('端口需为 1024–65535 的整数');await service.stop();try{const file=path.join(dataDir,'config.json');const c=JSON.parse(fs.readFileSync(file,'utf8'));c.port=port;writeFileAtomic(file,JSON.stringify(c,null,2)+'\n');}finally{await perform('start');}return status();});
     handle('quit',()=>{setImmediate(()=>app.quit());return {ok:true};});
     handle('import',async()=>{
       const selected=await dialog.showOpenDialog(window,{title:'选择旧代理的文件夹（包含 config.json）',properties:['openDirectory']});

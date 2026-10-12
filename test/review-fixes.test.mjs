@@ -242,7 +242,7 @@ test('上下文超长不算额度耗尽，真实额度不足仍判为耗尽', ()
   assert.equal(isQuotaError(400, 'prompt is too long: 200001 tokens > 200000 maximum, exceeds limit'), false);
   assert.equal(isQuotaError(400, 'insufficient credit balance'), true);
   assert.equal(isQuotaError(200, '积分不足'), true);
-  assert.equal(isQuotaError(429, ''), true);
+  assert.equal(isQuotaError(429, ''), false);
 });
 
 test('桌面数据：配置损坏时报出文件路径，导入目录缺 config.json 给出明确提示', (t) => {

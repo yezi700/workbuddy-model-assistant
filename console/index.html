@@ -752,7 +752,7 @@ function renderModels() {
       <td>${m.context ? Math.round(m.context / 1000) + 'k' : '—'}</td>
       <td class="muted">${esc(m.name || '')}<div style="font-size:11px">${esc(m.availability_note || '')}</div></td>
       <td class="probe-cell" data-id="${esc(m.id)}" data-site="${esc(m.site)}">—</td>
-      <td>${!m.selectable ? '<span class="pill">请先登录</span>' : isDef ? '<span class="pill ok">当前默认</span>' : `<button class="btn model-select" data-model="${esc(m.id)}" data-site="${esc(m.site)}">使用该渠道</button>`} <button class="btn route-edit" data-model="${esc(m.alias_of || m.id.split('/').slice(1).join('/') || m.id)}" data-site="${esc(m.site)}">调整使用规则</button></td>
+      <td>${!m.selectable ? `<span class="pill">${m.blocked_reason ? '规则损坏，已暂停' : '请先登录'}</span>` : isDef ? '<span class="pill ok">当前默认</span>' : `<button class="btn model-select" data-model="${esc(m.id)}" data-site="${esc(m.site)}">使用该渠道</button>`} <button class="btn route-edit" data-model="${esc(m.alias_of || m.id.split('/').slice(1).join('/') || m.id)}" data-site="${esc(m.site)}">调整使用规则</button></td>
     </tr>`;
   }).join('');
   $('modelTable').querySelectorAll('.model-select').forEach(b => b.onclick = async () => { try { b.disabled=true; await setDefault(b.dataset.model,b.dataset.site); } catch(e) { alert('切换失败：'+e.message); b.disabled=false; } });
@@ -818,13 +818,15 @@ function renderRouteList() {
     const fallbacks = p.fallbackMode === 'off' ? [] : p.fallbackSites.filter(s => s !== site);
     return `<div class="card" style="margin-top:10px"><div class="row"><b>${esc(friendlyModel(p.model))}</b><span class="pill ${p.enabled ? active?.blocked ? 'warn' : 'ok' : ''}">${!p.enabled ? '已停用' : active?.blocked ? '当前暂停' : '规则已启用'}</span><span class="grow"></span><button class="btn" data-edit="${i}">修改规则</button><button class="btn" data-default="${i}" ${!p.enabled || active?.blocked ? 'disabled' : ''}>使用这个模型</button></div><div class="rule-facts"><div><b>优先使用</b>${esc(siteLabel(site))}</div><div><b>当前渠道失败后</b>${fallbacks.length ? '先换账号，再尝试 ' + esc(fallbacks.map(siteLabel).join(' → ')) : '先换账号，仍失败就停止'}</div>${p.schedule.enabled ? `<div><b>允许调用的时间</b>${esc(p.schedule.start)}–${esc(p.schedule.end)}（北京时间）</div><div><b>活动日期</b>${esc(p.schedule.startDate || '不限')} 至 ${esc(p.schedule.endDate || '不限')} 的最后一晚</div>` : ''}</div>${active?.blocked && p.enabled ? '<p class="hint">现在不在允许的活动时间内，可以回到首页选择其他模型。</p>' : ''}<details class="helper-details"><summary>查看模型编号和更多信息</summary><p class="hint">模型编号：${esc(p.model)}<br>${p.requireFree ? '所有调用都要确认免费，价格未知时暂停。' : '调用时间与渠道按本规则限制，实际收费以上游活动为准。'}${p.fallbackMode === 'freeOnly' ? '<br>备用渠道必须在目录中明确标注免费。' : ''}</p><button class="btn danger" data-remove="${i}">删除这条规则</button></details></div>`;
   }).join('') : '<p class="hint">尚未配置模型规则。可从模型表选择站点，或使用上方配置按钮。</p>';
+  $('routeList').insertAdjacentHTML('afterbegin', Object.entries(ROUTING.blocked_models || {}).map(([model,reason]) => `<div class="card" style="margin-top:10px"><b>${esc(friendlyModel(model))}</b> <span class="pill bad">保护规则损坏，已暂停调用</span><p class="hint">${esc(reason)}。修复并保存有效规则后才会恢复，不会自动改走收费模型。</p><button class="btn" data-repair="${esc(model)}">修正规则</button></div>`).join(''));
+  $('routeList').querySelectorAll('[data-repair]').forEach(b => b.onclick = () => editRoute(b.dataset.repair));
   $('routeList').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => editRoute(ROUTING.policies[b.dataset.edit].model));
   $('routeList').querySelectorAll('[data-default]').forEach(b => b.onclick = async () => { try { await setDefault(ROUTING.policies[b.dataset.default].model); $('routeMessage').textContent = '默认模型已按规则设置，客户端继续填写 default。'; } catch(e) { $('routeMessage').textContent = e.message; } });
   $('routeList').querySelectorAll('[data-remove]').forEach(b => b.onclick = async () => { try { if (!await askConfirm('删除后这个模型将按普通方式选择渠道，原来的时间和费用限制也会移除。确定删除吗？')) return; const remaining = ROUTING.policies.filter((_, i) => i !== Number(b.dataset.remove)); await persistRouting(remaining); $('routeMessage').textContent = '已删除规则。'; } catch(e) { $('routeMessage').textContent = e.message; } });
 }
 function editRoute(model = '', site = 'cn-cli') {
   $('routeEditor').open = true;
-  const p = ROUTING.policies.find(x => x.model === model);
+  const p = (ROUTING.invalid_policies || []).find(x=>x.model===model) || ROUTING.policies.find(x => x.model === model);
   editingModel = p?.model || null;
   $('routeModel').value = model;
   $('routeSite').value = p?.site || site;

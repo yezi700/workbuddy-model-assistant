@@ -174,6 +174,7 @@ export class UpstreamError extends Error {
  *      { ok:false, status, text }
  */
 export async function openChat(cfg, site, body, { signal, exclude = [], accountId = null } = {}) {
+  if(cfg.blockedRoutingModels?.[body.model])throw Object.assign(new Error(`${body.model} 的保护规则损坏，已暂停调用`),{status:403});
   const siteCfg = cfg.sites[site];
   // ensureToken 会选定账号（池模式）并把该账号的 token 暴露给 getAuth，
   // 因此必须先 await，再取 chatHeaders——顺序不能反。
@@ -256,7 +257,7 @@ export async function openChat(cfg, site, body, { signal, exclude = [], accountI
     const text = await res.text().catch(() => '');
     if (!isTooLongError(res.status, text)) {
       // 不是「太长」，把读掉的 body 还原成一个可返回的结果
-      res = { status: res.status, _text: text };
+      res = { status: res.status, headers:res.headers, _text: text };
       break;
     }
 
@@ -280,7 +281,7 @@ export async function openChat(cfg, site, body, { signal, exclude = [], accountI
     });
     if (!更小.stats.applied) {
       // 压不动了，别再试。响应体上面已经读掉，必须带着正文返回，否则客户端只看到空的 400
-      res = { status: res.status, _text: text };
+      res = { status: res.status, headers:res.headers, _text: text };
       break;
     }
     当前payload = { ...当前payload, messages: 更小.messages };
@@ -303,7 +304,9 @@ export async function openChat(cfg, site, body, { signal, exclude = [], accountI
   if (res.status >= 400) {
     const text = res._text !== undefined ? res._text : await res.text().catch(() => '');
     cleanup();
-    return { ok: false, status: res.status, text, payload: 当前payload, site, accountId: usedAccount };
+    const retryAfter=res.headers?.get?.('retry-after');
+    const retryAfterMs=retryAfter ? (/^\d+(?:\.\d+)?$/.test(retryAfter) ? Number(retryAfter)*1000 : Date.parse(retryAfter)-Date.now()) : null;
+    return { ok: false, status: res.status, text, retryAfterMs, payload: 当前payload, site, accountId: usedAccount };
   }
 
   // 上游接受了这次请求 → 说明该账号可用，清掉它的失败计数
@@ -602,7 +605,7 @@ export async function inspectOpening(up) {
       if (parsed.kind === 'error') {
         up.close();
         await frames.return?.();
-        return { ok: false, status: isQuotaError(0, parsed.message) ? 429 : 502, text: parsed.message, accountId: up.accountId, site: up.site };
+        return { ok: false, status: isQuotaError(0, parsed.message) || /rate[ _-]?limit|too many requests|限流|频率/i.test(parsed.message) ? 429 : 502, text: parsed.message, accountId: up.accountId, site: up.site };
       }
       buffered.push(next.value);
       const c = parsed.obj?.choices?.[0];
@@ -614,7 +617,7 @@ export async function inspectOpening(up) {
 
 /** 上游拒绝是否可能因账号而异（换个账号有机会成功）。 */
 export function isAccountSpecificFailure(status, text) {
-  return status === 401 || status === 403 || status >= 500 || isQuotaError(status, text);
+  return status === 401 || status === 403 || status === 429 || status >= 500 || isQuotaError(status, text);
 }
 
 export async function openChatRotating(cfg, site, body, { signal, maxAccounts = 0 } = {}) {
@@ -657,7 +660,7 @@ export async function openChatRotating(cfg, site, body, { signal, maxAccounts = 
     if (!isAccountSpecificFailure(up.status, up.text)) return { up, tried };
 
     // 上报号池：额度类错误会被标记为「耗尽」，其余走冷却退避
-    markFailure(site, up.accountId, { status: up.status, message: up.text });
+    markFailure(site, up.accountId, { status: up.status, message: up.text, retryAfterMs:up.retryAfterMs });
     tried.push(up.accountId);
 
     const 还有号 = usableCount(site, undefined, tried) > 0;
