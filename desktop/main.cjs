@@ -54,7 +54,7 @@ async function smokeTest(){
     check('service started',service.running);
     const base=service.config().base;
     const h=await (await fetch(base+'/health')).json();check('bundled service identity',h.desktop_instance===service.instance);
-    check('console loads',window.webContents.getURL()===base+'/console');
+    check('console loads',window.webContents.getURL().split('#')[0]===base+'/console');
     const prefs=window.webContents.getLastWebPreferences();check('renderer sandbox',prefs.sandbox && prefs.contextIsolation && !prefs.nodeIntegration);
     window.close();check('close keeps tray and service',!window.isDestroyed() && !window.isVisible() && service.running && !tray.isDestroyed());
     await perform('stop');check('stop service',!service.running);

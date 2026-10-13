@@ -60,6 +60,7 @@ Windows 桌面应用：登录自己的 WorkBuddy / CodeBuddy 账号，选择模�
 npm ci
 npm start
 npm test
+npm run test:ui
 npm run dist
 ```
 

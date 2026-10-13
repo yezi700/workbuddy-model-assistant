@@ -379,7 +379,7 @@
   <span class="grow"></span>
   <span class="defmodel" id="defmodel" title="客户端填 model=default 时实际使用的模型"></span>
   <button class="btn icon-btn" id="themeBtn" onclick="toggleTheme()" title="切换深色 / 浅色主题" aria-label="切换主题">🌙</button>
-  <button class="btn" onclick="location.reload()" title="重新加载页面">刷新</button>
+  <button class="btn" id="refreshBtn" onclick="refreshCurrentView()" title="刷新当前页数据，保留填写内容">刷新</button>
 </header>
 
 <nav>
@@ -393,6 +393,7 @@
 </nav>
 
 <main>
+<p id="uiMessage" class="hint hidden" role="status" aria-live="polite"></p>
   <!-- 总览 -->
   <section id="tab-overview">
     <div class="welcome-line"><div><span class="eyebrow">本机服务 · 个人账号</span><h2>选好模型，就可以开始了</h2><p>这里负责连接你的账号。聊天仍在 Trae、Cherry Studio 等客户端里进行。</p></div><span class="pill ok" id="readyBadge">正在读取状态…</span></div>
@@ -424,8 +425,8 @@
         <b>当前选择：</b><span id="curDefault" class="pill ok"></span><button class="btn" onclick="editCurrentParameters()">当前模型参数</button>
         <span class="grow"></span>
         <input id="modelFilter" placeholder="搜索模型 ID / 名称" style="width:220px" oninput="renderModels()" />
-        <button class="btn" onclick="loadModels(true)">刷新接口与官方文档</button>
-        <button class="btn" id="probeBtn" onclick="probeVisible()">检查这些模型（可能消耗额度）</button>
+        <button class="btn" id="modelRefreshBtn" onclick="loadModels(true).catch(reportUiError)">刷新接口与官方文档</button>
+        <button class="btn" id="probeBtn" onclick="probeVisible().catch(reportUiError)">检查这些模型（可能消耗额度）</button>
       </div>
       <p class="hint">一个模型可能在多个账号渠道出现。“使用该渠道”会固定到该行渠道；“调整使用规则”可以设置失败后换到哪里。零倍率来自当前账号接口，限免标签不代表无限额度。<br>
       注意：目录来自各站点实时接口，国际版控制台接口不稳定时会用内置清单兜底，内置清单不含可靠价格，价格未知不能视为免费。两个渠道的目录始终显示，未登录时不能调用。参考清单不代表账号权限，实际可用模型可能随版本和套餐变化。</p>
@@ -484,7 +485,7 @@
       <div class="table-wrap"><table id="usageTable"><thead><tr>
         <th>模型</th><th>站点</th><th>调用</th><th>失败</th><th>入 token</th><th>出 token</th><th>消耗 credit</th>
       </tr></thead><tbody></tbody></table></div>
-      <div class="row" style="margin-top:10px"><button class="btn danger" onclick="resetUsage()">清空统计</button></div>
+      <div class="row" style="margin-top:10px"><button class="btn danger" onclick="resetUsage().catch(reportUiError)">清空统计</button></div>
     </div>
   </section>
 
@@ -618,7 +619,23 @@ const askText = (message, value = '', secret = false) => askDialog(message, valu
 
 const friendlySite = id => ({'cn-cli':'国内版WorkBuddy','intl-work':'国际版WorkBuddy AI'}[id] || id || '尚未确定');
 const friendlyModel = id => ({'hy4-preview':'Hy4 Preview','deepseek-v4.1-flash':'DeepSeek V4.1','step-5-preview':'Step-5 Preview'}[id] || id || '尚未选择');
-function showTab(name) { document.querySelector(`nav button[data-tab="${name}"]`)?.click(); }
+const TABS=['overview','models','routing','usage','logs','accounts','service'];
+function reportUiError(error){$('uiMessage').textContent='操作未完成：'+(error?.message||error);$('uiMessage').classList.remove('hidden');}
+async function showTab(name) {
+  if(!TABS.includes(name))return;
+  document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
+  TABS.forEach(t=>$('tab-'+t).classList.toggle('hidden',t!==name));
+  try{sessionStorage.setItem('wb-tab',name);}catch{}
+  history.replaceState(null,'','#'+name);
+  try{if(name==='models')await loadModels();if(name==='routing')await loadRouting();if(name==='usage')await loadUsage();if(name==='accounts')renderAccounts();if(name==='logs')await pollLogs();}catch(e){reportUiError(e);}
+}
+async function refreshCurrentView(){
+  const b=$('refreshBtn');if(b.disabled)return;b.disabled=true;b.textContent='刷新中…';
+  try{await refreshHomeStatus();const tab=document.querySelector('nav .active')?.dataset.tab;
+    if(tab==='models')await loadModels(true);if(tab==='routing')await loadRouting();if(tab==='usage')await loadUsage();if(tab==='accounts')renderAccounts();if(tab==='logs')await pollLogs();
+    $('uiMessage').textContent='当前页数据已刷新，填写内容已保留。';$('uiMessage').classList.remove('hidden');
+  }catch(e){reportUiError(e);}finally{b.disabled=false;b.textContent='刷新';}
+}
 async function refreshHomeStatus() {
   const [, routing] = await Promise.all([loadState(), api('/routing')]);
   ROUTING = routing;
@@ -644,12 +661,12 @@ function renderHome() {
     const paused = !!a?.blocked || !p.enabled;
     const loggedIn = account?.logged_in && account?.enabled;
     // 默认模型可能存成「渠道/模型」（从模型表选择时），所以也要比对服务端解析出的实际路由
-    const selected = currentRaw === p.model || (!!r?.model && !r.blocked && r.model === p.model);
+    const selected = currentRaw === p.model || (!!r?.model && !r.blocked && r.model === p.model && r.site === site);
     const enabled = !paused && loggedIn;
     const fallback = p.fallbackMode === 'off' ? [] : p.fallbackSites.filter(s => s !== site);
-    const about = p.model === 'deepseek-v4.1-flash' ? '使用国际版WorkBuddy AI。免费活动与权限以你的账号为准。' : p.model === 'step-5-preview' ? '国内版WorkBuddy优先，失败后可尝试已指定的国际版WorkBuddy AI。' : p.model === 'hy4-preview' ? '先确认当前夜间活动，再启用时间规则。' : '按你保存的使用规则调用。';
-    const status = !p.enabled ? '规则已停用' : paused ? '当前不在允许时段' : !loggedIn ? '需要先登录' : selected ? '当前选择' : '账号已登录';
-    return `<article class="card quick-model ${selected ? 'selected' : ''}"><div class="row"><h4>${esc(friendlyModel(p.model))}</h4><span class="grow"></span><span class="pill ${paused ? 'warn' : selected ? 'ok' : ''}">${status}</span></div><p class="description">${esc(about)}</p><div class="model-facts"><p>使用账号：<b>${esc(friendlySite(site))}</b></p><p>失败后：${fallback.length ? '尝试 ' + esc(fallback.map(friendlySite).join(' → ')) : '同渠道换号，仍失败就停止'}</p>${p.schedule.enabled ? `<p>允许时间：${esc(p.schedule.start)}–次日 ${esc(p.schedule.end)}（北京时间）</p><p>活动至 ${esc(p.schedule.endDate || '未设置结束日期')} 的最后一晚</p>` : ''}</div><button class="btn ${selected ? '' : 'primary'}" data-use-model="${i}" ${!enabled || selected ? 'disabled' : ''}>${paused ? '暂时不能使用' : !loggedIn ? '请先登录对应账号' : selected ? '正在使用这个模型' : '使用 ' + esc(friendlyModel(p.model))}</button>${!loggedIn && !paused ? '<button class="btn" style="margin-top:8px" data-home-login="1">去登录账号</button>' : ''}</article>`;
+    const about = '按此规则使用 '+friendlySite(site)+'，免费活动与模型权限以账号实际权益为准。';
+    const status = !p.enabled ? '规则已停用' : paused ? '当前暂停调用' : !loggedIn ? '需要先登录' : selected ? '当前选择' : '账号已登录';
+    return `<article class="card quick-model ${selected ? 'selected' : ''}"><div class="row"><h4>${esc(friendlyModel(p.model))}</h4><span class="grow"></span><span class="pill ${paused ? 'warn' : selected ? 'ok' : ''}">${status}</span></div><p class="description">${esc(about)}</p><div class="model-facts"><p>使用账号：<b>${esc(friendlySite(site))}</b></p><p>失败后：${fallback.length ? '尝试 ' + esc(fallback.map(friendlySite).join(' → ')) : '同渠道换号，仍失败就停止'}</p>${p.schedule.enabled ? `<p>允许时间：${esc(p.schedule.start)}–${p.schedule.start>p.schedule.end?'次日 ':''}${esc(p.schedule.end)}（北京时间）</p><p>活动至 ${esc(p.schedule.endDate || '未设置结束日期')} 的最后一晚</p>` : ''}</div><button class="btn ${selected ? '' : 'primary'}" data-use-model="${i}" ${!enabled || selected ? 'disabled' : ''}>${paused ? '暂时不能使用' : !loggedIn ? '请先登录对应账号' : selected ? '正在使用这个模型' : '使用 ' + esc(friendlyModel(p.model))}</button>${!loggedIn && !paused ? '<button class="btn" style="margin-top:8px" data-home-login="1">去登录账号</button>' : ''}</article>`;
   }).join('') || '<div class="card">还没有常用模型规则。<button class="btn" onclick="showTab(\'routing\')">去添加使用规则</button></div>';
   $('quickModels').querySelectorAll('[data-use-model]').forEach(b => b.onclick = async () => {
     const model = policies[Number(b.dataset.useModel)].model;
@@ -685,21 +702,10 @@ function toggleTheme() {
 }
 // 与 <head> 里的首屏脚本保持一致（那里已设过 dataset，这里只同步按钮外观）
 applyTheme(document.documentElement.dataset.theme || 'dark');
+$('modelFilter').addEventListener('input',()=>{try{sessionStorage.setItem('wb-model-filter',$('modelFilter').value);}catch{}});
 
 // ---------- tabs ----------
-document.querySelectorAll('nav button').forEach((b) => {
-  b.onclick = () => {
-    document.querySelectorAll('nav button').forEach((x) => x.classList.toggle('active', x === b));
-    ['overview', 'models', 'routing', 'usage', 'logs', 'accounts', 'service'].forEach((t) => {
-      $('tab-' + t).classList.toggle('hidden', t !== b.dataset.tab);
-    });
-    if (b.dataset.tab === 'usage') loadUsage();
-    if (b.dataset.tab === 'models') loadModels().catch(e => { $('homeMessage').textContent = e.message; });
-    if (b.dataset.tab === 'routing') loadRouting();
-    if (b.dataset.tab === 'accounts') renderAccounts();
-    if (b.dataset.tab === 'logs') pollLogs();
-  };
-});
+document.querySelectorAll('nav button').forEach(b=>{b.onclick=()=>showTab(b.dataset.tab);});
 
 // ---------- 状态总览 ----------
 function fmtUptime(ms) {
@@ -716,6 +722,8 @@ async function loadState() {
   $('baseUrl').textContent = STATE.base_url;
   $('apiKey').textContent = STATE.api_key_count ? '密钥已保存在本机，点击右侧按钮复制' : '当前未设置密钥';
   renderHome();
+  if(MODELS){$('curDefault').textContent=STATE.default_model;renderModels();}
+  if(!$('tab-accounts').classList.contains('hidden'))renderAccounts();
   $('svcVer').textContent = `v${STATE.version} / ${STATE.node}`;
   $('svcUp').textContent = fmtUptime(STATE.uptime_ms);
   $('svcHost').textContent = STATE.base_url;
@@ -737,11 +745,14 @@ async function loadState() {
 }
 
 // ---------- 模型 ----------
-async function loadModels(force = false) {
-  if (loadModels.busy) return;
-  loadModels.busy = true;
-  $('modelUpdateStatus').textContent = '正在检查账号接口和官方文档…';
-  try {
+let modelsRequest=null,modelsForceQueued=false;
+function loadModels(force=false){
+  if(modelsRequest){if(force)modelsForceQueued=true;return modelsRequest;}
+  $('modelRefreshBtn').disabled=true;
+  modelsRequest=(async()=>{
+    let refresh=force;
+    do{modelsForceQueued=false;$('modelUpdateStatus').textContent='正在检查账号接口和官方文档…';
+      const force=refresh;
   MODELS = await api('/models' + (force ? '?refresh=1' : ''));
   ALIASES = MODELS.aliases || {};
   $('curDefault').textContent = MODELS.default_model;
@@ -749,10 +760,11 @@ async function loadModels(force = false) {
   renderModels();
   const docStatus = Object.entries(MODELS.documents || {}).filter(([,d])=>d).map(([s,d])=>`${friendlySite(s)}文档：${d.source==='live'?'已读取':d.source==='cache'?'读取失败，显示缓存':'暂无法读取'}${d.fetchedAt?'（'+new Date(d.fetchedAt).toLocaleString('zh-CN')+'）':''}`).join('；');
   $('modelUpdateStatus').textContent = `检查于 ${new Date().toLocaleString('zh-CN')}。停留本页每分钟检查接口，文档缓存 5 分钟；手动刷新立即重新读取。${docStatus}`;
-  } catch (e) {
-    $('modelUpdateStatus').textContent = `更新失败：${e.message}。当前表格保留上次结果，请查看各行更新时间。`;
-    throw e;
-  } finally { loadModels.busy = false; }
+
+      refresh=modelsForceQueued;
+    }while(refresh);
+  })().catch(e=>{$('modelUpdateStatus').textContent='更新失败：'+e.message+'。表格保留上次结果，请查看更新时间。';throw e;}).finally(()=>{modelsRequest=null;$('modelRefreshBtn').disabled=false;});
+  return modelsRequest;
 }
 
 function multText(m) {
@@ -763,8 +775,11 @@ function multText(m) {
   return '<span class="pill">价格未知</span>';
 }
 
+const previousProbes=new Map();
 function renderModels() {
   if (!MODELS) return;
+  const wrap=$('modelTable').closest('.table-wrap'),top=wrap.scrollTop,left=wrap.scrollLeft;
+  $('modelTable').querySelectorAll('.probe-cell').forEach(c=>{if(c.textContent!=='—')previousProbes.set(c.dataset.id,c.textContent);});
   const q = ($('modelFilter').value || '').toLowerCase();
   const rows = MODELS.data.filter((m) => !q || (m.id + ' ' + (m.name || '')).toLowerCase().includes(q));
   $('modelTable').querySelector('tbody').innerHTML = rows.map((m) => {
@@ -776,21 +791,22 @@ function renderModels() {
       <td>${multText(m)}<div class="muted" style="font-size:11px">${esc(m.price_note || '')}</div>${m.catalog_error ? '<div class="muted" style="font-size:11px">接口读取失败，当前为缓存或参考信息</div>' : ''}${m.price_updated_at ? `<div class="muted" style="font-size:11px">${m.catalog_source === 'upstream(cache)' ? '缓存' : '更新'}：${esc(new Date(m.price_updated_at).toLocaleString('zh-CN'))}</div>` : ''}</td>
       <td>${m.context ? Math.round(m.context / 1000) + 'k' : '—'}${m.context_default ? `<div class="muted" style="font-size:11px">默认 ${Math.round(m.context_default / 1000)}k</div>` : ''}${m.max_output ? `<div class="muted" style="font-size:11px">输出上限 ${Math.round(m.max_output / 1000)}k</div>` : ''}</td>
       <td class="muted">${esc(m.description || m.name || '')}<div style="font-size:11px">${esc(m.availability_note || '')}</div>${m.parameters?.reasoning_effort || m.parameters?.context_window ? `<div class="muted" style="font-size:11px">已设置：${m.parameters.reasoning_effort ? '思考'+effortName(m.parameters.reasoning_effort) : ''} ${m.parameters.context_window ? '窗口'+m.parameters.context_window/1000+'K' : ''}</div>` : ''}${m.documentation_url ? `<a href="${esc(m.documentation_url)}" target="_blank" rel="noopener">官方文档${m.documentation_status === 'cache' ? '（缓存）' : m.documentation_status === 'unavailable' ? '（暂无法读取）' : ''}</a>` : ''}</td>
-      <td class="probe-cell" data-id="${esc(m.id)}" data-site="${esc(m.site)}">—</td>
+      <td class="probe-cell" data-id="${esc(m.id)}" data-site="${esc(m.site)}">${esc(previousProbes.get(m.id)||'—')}</td>
       <td>${!m.selectable ? `<span class="pill">${m.blocked_reason ? '规则损坏，已暂停' : '请先登录'}</span>` : isDef ? '<span class="pill ok">当前默认</span>' : `<button class="btn model-select" data-model="${esc(m.id)}" data-site="${esc(m.site)}">使用该渠道</button>`} <button class="btn model-params" data-id="${esc(m.id)}">模型参数</button> <button class="btn route-edit" data-model="${esc(m.alias_of || m.id.split('/').slice(1).join('/') || m.id)}" data-site="${esc(m.site)}">调整使用规则</button></td>
     </tr>`;
   }).join('');
+  wrap.scrollTop=top;wrap.scrollLeft=left;
   $('modelTable').querySelectorAll('.model-select').forEach(b => b.onclick = async () => { try { b.disabled=true; await setDefault(b.dataset.model,b.dataset.site); } catch(e) { alert('切换失败：'+e.message); b.disabled=false; } });
   $('modelTable').querySelectorAll('.model-params').forEach(b => b.onclick = () => editModelParameters(b.dataset.id));
-  $('modelTable').querySelectorAll('.route-edit').forEach(b => b.onclick = async () => { document.querySelector('nav button[data-tab="routing"]').click(); await loadRouting(); editRoute(b.dataset.model, b.dataset.site); });
+  $('modelTable').querySelectorAll('.route-edit').forEach(b => b.onclick = async () => { await showTab('routing'); editRoute(b.dataset.model, b.dataset.site); });
 }
 
 async function setDefault(model, site) {
   const r = await api('/default-model', { method: 'POST', body: { model, site } });
   $('curDefault').textContent = r.default_model;
   $('defmodel').innerHTML = `当前选择 <b>${esc(friendlyModel(r.default_model.split('/').at(-1)))}</b>`;
-  await loadModels();
   await loadState();
+  await loadModels();
 }
 
 function editCurrentParameters() {
@@ -807,11 +823,16 @@ function editModelParameters(id) {
   const caps=m.parameter_capabilities||{efforts:[],windows:[]};
   $('parameterEffort').innerHTML=`<option value="">跟随上游默认${caps.defaultEffort?'（'+effortName(caps.defaultEffort)+'）':''}</option>`+(caps.efforts||[]).map(e=>`<option value="${esc(e)}">${esc(effortName(e))}</option>`).join('');
   $('parameterWindow').innerHTML=`<option value="">使用代理自动处理</option>`+(caps.windows||[]).map(n=>`<option value="${n}">${n>=1000000?n/1000000+'M':n/1000+'K'}${n===caps.defaultWindow?'（官方默认）':''}</option>`).join('');
+  const staleEffort=m.parameters?.reasoning_effort && !caps.efforts?.includes(m.parameters.reasoning_effort);
+  const staleWindow=m.parameters?.context_window && !caps.windows?.includes(m.parameters.context_window);
+  if(staleEffort)$('parameterEffort').insertAdjacentHTML('beforeend',`<option value="${esc(m.parameters.reasoning_effort)}" disabled>原设置：${esc(effortName(m.parameters.reasoning_effort))}（当前不支持）</option>`);
+  if(staleWindow)$('parameterWindow').insertAdjacentHTML('beforeend',`<option value="${m.parameters.context_window}" disabled>原窗口：${m.parameters.context_window/1000}K（当前不支持）</option>`);
   $('parameterEffort').value=m.parameters?.reasoning_effort||'';
   $('parameterWindow').value=String(m.parameters?.context_window||'');
-  $('parameterEffort').disabled=!caps.efforts?.length;
-  $('parameterWindow').disabled=!caps.windows?.length;
+  $('parameterEffort').disabled=!caps.efforts?.length&&!staleEffort;
+  $('parameterWindow').disabled=!caps.windows?.length&&!staleWindow;
   $('parameterMessage').textContent=(!caps.efforts?.length?'官方目录未提供可调思考档位。':'')+(!caps.windows?.length?'官方目录未提供可选窗口。':'');
+  if(staleEffort||staleWindow)$('parameterMessage').textContent='原设置已不被当前渠道支持，请重新选择或恢复默认。';
   d.showModal();$('parameterClose').focus();
 }
 async function saveModelParameters(reset=false) {
@@ -848,7 +869,8 @@ async function probeVisible() {
 
 // ---------- 路由 ----------
 let ROUTING = null;
-let editingModel = null;
+let editingModel = null,routingOptionsDirty=false;
+['poolMax','poolSwitch','globalRouteMode'].forEach(id=>$(id).addEventListener('input',()=>{routingOptionsDirty=true;}));
 const siteLabel = id => friendlySite(id);
 async function loadRouting() {
   try {
@@ -858,9 +880,7 @@ async function loadRouting() {
       $(id).innerHTML = ROUTING.sites.map(s => `<option value="${esc(s.id)}">${esc(friendlySite(s.id))}${s.logged_in ? '' : '（未登录）'}${s.enabled ? '' : '（禁用）'}</option>`).join('');
       if (before) $(id).value = before;
     }
-    $('poolMax').value = ROUTING.pool?.maxAccountsPerRequest || 3;
-    $('poolSwitch').checked = ROUTING.pool?.switchSiteOnExhausted !== false;
-    $('globalRouteMode').value = ROUTING.routing.fallbackMode;
+    if(!routingOptionsDirty){$('poolMax').value=ROUTING.pool?.maxAccountsPerRequest||3;$('poolSwitch').checked=ROUTING.pool?.switchSiteOnExhausted!==false;$('globalRouteMode').value=ROUTING.routing.fallbackMode;}
     $('routeModelIds').innerHTML = [...new Set((MODELS?.data || []).map(m => m.alias_of || m.id.split('/').slice(1).join('/') || m.id))].map(m => `<option value="${esc(m)}"></option>`).join('');
     renderRouteList();
     renderHome();
@@ -908,12 +928,13 @@ function routePreset(kind) {
 }
 async function persistRouting(policies) {
   await api('/routing', { method: 'POST', body: { policies, routing: { fallbackMode: $('globalRouteMode').value }, pool: { maxAccountsPerRequest: Number($('poolMax').value), switchSiteOnExhausted: $('poolSwitch').checked } } });
-  await loadRouting();
+  routingOptionsDirty=false;await loadRouting();
 }
 async function saveRoute() {
   try {
     const p = { model: $('routeModel').value.trim(), site: $('routeSite').value, enabled: $('routeEnabled').checked, requireFree: $('routeFree').checked, fallbackMode: $('routeMode').value, fallbackSites: [...$('routeFallbacks').querySelectorAll('input:checked')].map(x => x.value), schedule: { enabled: $('routeSchedule').checked, start: $('routeStart').value, end: $('routeEnd').value, startDate: $('routeStartDate').value, endDate: $('routeEndDate').value, site: $('routeNightSite').value, timezone: 'Asia/Shanghai', outside: $('routeOutside').value } };
     if (p.schedule.enabled && (!p.schedule.start || !p.schedule.end)) throw new Error('请填写免费时段的起止时间。');
+    if(ROUTING.policies.some(x=>x.model===p.model && x.model!==editingModel))throw new Error('这个模型已有规则，请直接修改已有规则，避免覆盖它。');
     const policies = ROUTING.policies.filter(x => x.model !== editingModel && x.model !== p.model);
     policies.push(p);
     await persistRouting(policies);
@@ -956,7 +977,7 @@ async function loadUsage() {
 async function resetUsage() {
   if (!await askConfirm('确定清空用量统计？')) return;
   await api('/usage/reset', { method: 'POST' });
-  loadUsage();
+  await loadUsage();
 }
 
 // ---------- 日志 ----------
@@ -981,7 +1002,7 @@ async function pollLogs() {
 function acctStatusPill(a) {
   if (!a.enabled) return '<span class="pill">已禁用</span>';
   if (a.exhausted) return '<span class="pill bad">额度耗尽</span>';
-  if (a.usable) return '<span class="pill ok">可尝试</span>';
+  if (a.usable) return `<span class="pill ok">${a.model_limits?.length?'其他模型可尝试':'可尝试'}</span>`;
   if (a.cooldown_until) return '<span class="pill warn">暂时休息，稍后重试</span>';
   return '<span class="pill warn">不可用</span>';
 }
@@ -1007,6 +1028,7 @@ function renderAccounts() {
       </div>
     </div>`;
   }).join('');
+  $('accountCards').querySelectorAll('button[data-site]').forEach(b=>{b.disabled=accountBusy.has(b.dataset.site);});
 }
 
 function acctRow(site, a) {
@@ -1024,6 +1046,7 @@ function acctRow(site, a) {
         uid ${esc(String(a.uid || '').slice(0, 8))}… · 余额 ${余额} · token 至 ${esc(到期)}
         ${a.fail_count ? ` · 连续失败 ${a.fail_count} 次` : ''}
       </div>
+      ${a.model_limits?.length ? `<div class="acct-err">${a.model_limits.map(l=>esc(friendlyModel(l.model))+' 免费额度暂不可用，重置于 '+esc(new Date(l.until).toLocaleString('zh-CN'))).join('<br>')}</div>` : ''}
       ${a.last_error ? `<div class="acct-err" title="${esc(a.last_error)}">${esc(a.last_error.slice(0, 90))}</div>` : ''}
       <div class="acct-ops">
         <button class="btn mini" data-action="rename" data-site="${esc(site)}" data-id="${esc(a.id)}" data-label="${esc(a.label)}">改名</button>
@@ -1034,6 +1057,7 @@ function acctRow(site, a) {
     </div>`;
 }
 
+const accountBusy=new Set();
 // 账号区按钮统一走事件委托：参数放在 data-* 里，不再拼进 onclick 字符串
 // （账号名里带单引号时原先按钮会失效，精心构造的名字还能执行脚本）。
 $('accountCards').addEventListener('click', (event) => {
@@ -1049,9 +1073,10 @@ $('accountCards').addEventListener('click', (event) => {
     reset: () => resetAccount(site, id),
     remove: () => removeAccount(site, id, label),
   }[action];
-  if (!run) return;
-  $('accountMessage').textContent = '';
-  run().catch((e) => { $('accountMessage').textContent = '操作未完成：' + e.message; });
+  if (!run || accountBusy.has(site)) return;
+  accountBusy.add(site);b.disabled=true;
+  $('accountMessage').textContent='处理中…';
+  Promise.resolve().then(run).then(result=>{$('accountMessage').textContent=result?.canceled?'已取消操作。':'操作已完成。';}).catch(e=>{$('accountMessage').textContent='操作未完成：'+e.message;}).finally(()=>{accountBusy.delete(site);renderAccounts();});
 });
 
 async function poolPost(path, body) {
@@ -1072,25 +1097,24 @@ async function resetAccount(site, id) {
 
 async function renameAccount(site, id, old) {
   const label = await askText('账号显示名：', old);
-  if (!label || !label.trim()) return;
+  if (!label || !label.trim()) return {canceled:true};
   await poolPost('/pool/account', { site, id, label: label.trim() });
 }
 
 async function removeAccount(site, id, label) {
-  if (!await askConfirm(`确认删除账号「${label}」？\n（只删本机保存的凭证，不影响你的账号本身）`)) return;
+  if (!await askConfirm(`确认删除账号「${label}」？\n（只删本机保存的凭证，不影响你的账号本身）`)) return {canceled:true};
   await poolPost('/pool/account/remove', { site, id });
 }
 
 async function refreshPool(site) {
   const r = await api('/pool?site=' + encodeURIComponent(site));
-  STATE.sites = STATE.sites.map((s) => (s.site === site ? { ...s, accounts: r.accounts } : s));
+  STATE.sites = STATE.sites.map((s) => (s.site === site ? { ...s, accounts: r.accounts,account_count:r.accounts.length,account_usable:r.accounts.filter(a=>a.usable).length } : s));
   renderAccounts();
 }
 
 async function startLogin(site) {
-  loginSite = site;
   const entered = await askText('给这个账号起个名字（可留空，用昵称）：', '');
-  if (entered === null) return;
+  if (entered === null) return {canceled:true};
   const label = entered.trim() || null;
   let r;
   try {
@@ -1102,6 +1126,7 @@ async function startLogin(site) {
     }
     throw e;
   }
+  clearTimeout(loginPollTimer);loginPollSeq++;loginSite=site;
   $('loginBox').classList.remove('hidden');
   $('loginUrl').textContent = r.authUrl;
   $('loginMsg').textContent = '等待授权…';
@@ -1212,6 +1237,8 @@ async function setupDesktop() {
   await loadModels();
   await loadRouting();
   renderAccounts();
+  let remembered='';try{remembered=location.hash.slice(1)||sessionStorage.getItem('wb-tab')||'';$('modelFilter').value=sessionStorage.getItem('wb-model-filter')||'';}catch{}
+  renderModels();await showTab(TABS.includes(remembered)?remembered:'overview');
   // 窗口收到托盘 / 页面不可见时暂停轮询：/state 每次都会查各渠道余额，
   // 原先常驻托盘时也照常每 20 秒请求一次。日志只在「排查问题」页可见时拉取。
   const logsVisible = () => !document.hidden && !$('tab-logs').classList.contains('hidden');

@@ -3,9 +3,10 @@
 //   - SSE 读取（带首字节/空闲超时，客户端断开即中止）
 //   - 模型清单（含积分倍率）、额度查询
 import crypto from 'node:crypto';
+import {activeModelLimit} from './model-quota.mjs';
 import {applyModelParameters} from './model-parameters.mjs';
 import { getAuth, ensureToken } from './auth.mjs';
-import { markSuccess, markFailure, isQuotaError, usableCount, pickAccount, getAccount } from './pool.mjs';
+import { markSuccess, markFailure, isQuotaError, usableCount, pickAccount, getAccount, listAccounts } from './pool.mjs';
 import { fitMessages, estimateMessages, learnedLimit, isTooLongError } from './compress.mjs';
 import { chatHeaders, billingHeaders } from './headers.mjs';
 import { warn } from './log.mjs';
@@ -636,14 +637,17 @@ export async function openChatRotating(cfg, site, body, { signal, maxAccounts = 
   let up = null;
 
   for (let i = 0; i < 上限; i++) {
-    const picked = pickAccount(site, { exclude: tried }) || pickAccount(site, { exclude: tried, fallback: true });
+    const picked = pickAccount(site, { exclude: tried,model:body.model }) || pickAccount(site, { exclude: tried, fallback: true,model:body.model });
+    if(!picked && listAccounts(site).some(a=>a.enabled!==false && activeModelLimit(a,body.model))){
+      return {up:{ok:false,status:429,text:'该渠道当前可用账号的此模型免费额度已用完，等待重置或尝试允许的备用渠道',site},tried};
+    }
     try {
       up = await inspectOpening(await openChat(cfg, site, body, { signal, exclude: tried, accountId: picked?.id }));
     } catch (e) {
       if (signal?.aborted || !picked || !([401, 502, 503, 504].includes(e.status) || e.transport)) throw e;
       markFailure(site, picked.id, { status: e.status || 0, message: e.message });
       tried.push(picked.id);
-      if (i + 1 >= 上限 || usableCount(site, undefined, tried) === 0) throw e;
+      if (i + 1 >= 上限 || usableCount(site, undefined, tried, body.model) === 0) throw e;
       warn(`[${site}] 账号 ${picked.id} 连接或授权失败，切换下一个账号`);
       continue;
     }
@@ -670,10 +674,10 @@ export async function openChatRotating(cfg, site, body, { signal, maxAccounts = 
     if (!isAccountSpecificFailure(up.status, up.text)) return { up, tried };
 
     // 上报号池：额度类错误会被标记为「耗尽」，其余走冷却退避
-    markFailure(site, up.accountId, { status: up.status, message: up.text, retryAfterMs:up.retryAfterMs });
+    markFailure(site, up.accountId, { status: up.status, message: up.text, retryAfterMs:up.retryAfterMs,model:body.model });
     tried.push(up.accountId);
 
-    const 还有号 = usableCount(site, undefined, tried) > 0;
+    const 还有号 = usableCount(site, undefined, tried, body.model) > 0;
     if (!还有号) return { up, tried };
     const 原因 = isQuotaError(up.status, up.text) ? '额度不足' : `HTTP ${up.status}`;
     warn(`[${site}] 账号 ${up.accountId} ${原因}，切换下一个账号重试`);

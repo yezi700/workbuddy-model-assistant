@@ -8,6 +8,7 @@ import { log, warn, stamp } from './log.mjs';
 import { writeFileAtomic } from './util.mjs';
 import {
   DEFAULT_ACCOUNT_ID,
+  EXHAUST_TTL_MS,
   listAccounts,
   pickAccount,
   isUsable,
@@ -308,9 +309,10 @@ export function accountSnapshot(site) {
     nickname: a.nickname || null,
     enabled: a.enabled !== false,
     usable: isUsable(a),
-    exhausted: Boolean(a.exhaustedAt),
+    exhausted: Boolean(a.exhaustedAt && Date.now()-a.exhaustedAt<EXHAUST_TTL_MS),
     exhausted_at: a.exhaustedAt ? new Date(a.exhaustedAt).toISOString() : null,
     cooldown_until: a.cooldownUntil ? new Date(a.cooldownUntil).toISOString() : null,
+    model_limits:Object.entries(a.modelLimits||{}).filter(([,l])=>Number.isFinite(l?.until)&&l.until>Date.now()).map(([model,l])=>({model,until:new Date(l.until).toISOString()})),
     fail_count: a.failCount || 0,
     last_error: a.lastError || null,
     last_error_at: a.lastErrorAt ? new Date(a.lastErrorAt).toISOString() : null,

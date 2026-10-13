@@ -23,6 +23,7 @@
 //       所以不迁移也不影响原有行为。一旦池里加入了第 2 个账号，
 //       就会把默认账号并入池文件统一管理。
 import fs from 'node:fs';
+import {modelQuotaReset,activeModelLimit} from './model-quota.mjs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { getConfigDir, authPathFor } from './config.mjs';
@@ -33,7 +34,7 @@ import { writeFileAtomic } from './util.mjs';
 export const DEFAULT_ACCOUNT_ID = 'default';
 
 /** 额度耗尽后多久重新尝试（额度可能已重置）。默认 6 小时。 */
-const EXHAUST_TTL_MS = 6 * 60 * 60 * 1000;
+export const EXHAUST_TTL_MS = 6 * 60 * 60 * 1000;
 
 /** 失败退避阶梯：连续失败 n 次后冷却多久。 */
 const COOLDOWN_STEPS_MS = [0, 30_000, 2 * 60_000, 10 * 60_000, 30 * 60_000];
@@ -154,7 +155,8 @@ export function getAccount(site, id) {
 }
 
 /** 账号是否处于「可用」状态（启用 + 没冷却 + 没被判额度耗尽）。 */
-export function isUsable(a, now = Date.now()) {
+export function isUsable(a, now = Date.now(), model = null) {
+  if(activeModelLimit(a,model,now))return false;
   if (!a || a.enabled === false) return false;
   if (!a.accessToken) return false;
   if (a.cooldownUntil && now < a.cooldownUntil) return false;
@@ -173,11 +175,11 @@ export function isUsable(a, now = Date.now()) {
  * fallback 为 true 时：若没有任何「可用」账号，退而返回一个「已耗尽/冷却中」的账号。
  * 这样上游能给最终答案，好过本地直接失败——额度可能已经重置了。
  */
-export function pickAccount(site, { exclude = [], now = Date.now(), fallback = false } = {}) {
+export function pickAccount(site, { exclude = [], now = Date.now(), fallback = false, model = null } = {}) {
   const pool = loadPool(site);
   const skip = new Set(exclude);
-  const candidates = pool.accounts.filter((a) => !skip.has(a.id) && a.enabled !== false && a.accessToken);
-  const usable = candidates.filter((a) => isUsable(a, now));
+  const candidates = pool.accounts.filter((a) => !skip.has(a.id) && a.enabled !== false && a.accessToken && !activeModelLimit(a,model,now));
+  const usable = candidates.filter((a) => isUsable(a, now, model));
   const 池 = usable.length || !fallback ? usable : candidates;
   if (!池.length) return null;
 
@@ -197,9 +199,9 @@ export function pickAccount(site, { exclude = [], now = Date.now(), fallback = f
 }
 
 /** 池里还有多少个「现在可用」的账号（可排除已试过的 id）。 */
-export function usableCount(site, now = Date.now(), exclude = []) {
+export function usableCount(site, now = Date.now(), exclude = [], model = null) {
   const skip = new Set(exclude);
-  return loadPool(site).accounts.filter((a) => !skip.has(a.id) && isUsable(a, now)).length;
+  return loadPool(site).accounts.filter((a) => !skip.has(a.id) && isUsable(a, now, model)).length;
 }
 
 /* ---------------- 状态变更（都会落盘） ---------------- */
@@ -280,7 +282,7 @@ export function markSuccess(site, id) {
  *   - 401/403：凭证失效，需要重新登录
  *   - 5xx/网络：退避冷却，过一会儿还能用
  */
-export function markFailure(site, id, { status = 0, message = '', retryAfterMs = null } = {}) {
+export function markFailure(site, id, { status = 0, message = '', retryAfterMs = null, model = null } = {}) {
   // 兼容模式只有一个账号，没有可轮换的对象；也不必为它建池文件
   if (!hasPoolFile(site)) return null;
   return mutate(site, (pool) => {
@@ -290,7 +292,11 @@ export function markFailure(site, id, { status = 0, message = '', retryAfterMs =
     a.lastError = String(message || status || '').slice(0, 200);
     a.lastErrorAt = Date.now();
     a.lastUsedAt = Date.now();
-    if (isQuotaError(status, message)) {
+    const reset=model && modelQuotaReset(message);
+    if(reset){
+      a.modelLimits={...(a.modelLimits||{}),[model]:{until:reset,reason:String(message).slice(0,200)}};
+      a.cooldownUntil=null;
+    } else if (isQuotaError(status, message)) {
       a.exhaustedAt = Date.now();
       a.cooldownUntil = null;
     } else if (status===429) {
@@ -325,6 +331,7 @@ export function resetAccountState(site, id) {
     if (!a) return null;
     a.exhaustedAt = null;
     a.cooldownUntil = null;
+    a.modelLimits = {};
     a.failCount = 0;
     a.lastError = null;
     return a;

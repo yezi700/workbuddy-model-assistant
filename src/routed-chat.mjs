@@ -3,8 +3,8 @@ import { isQuotaError } from './pool.mjs';
 import { warn } from './log.mjs';
 
 export function canSwitch(status, text, cfg) {
-  if (isQuotaError(status, text)) return cfg.pool?.switchSiteOnExhausted !== false;
-  return [502, 503, 504].includes(status) || (status === 400 && /service info not found|model \[[^\]]+\] .*not found|no such model/i.test(String(text || '')));
+  if (status===429 || isQuotaError(status, text)) return cfg.pool?.switchSiteOnExhausted !== false;
+  return [401,403,502, 503, 504].includes(status) || (status === 400 && /service info not found|model \[[^\]]+\] .*not found|no such model/i.test(String(text || '')));
 }
 
 // 三种协议复用同一条切换路径；只在尚未向客户端输出回复时重试。
@@ -22,7 +22,7 @@ export async function openRoutedChat(cfg, target, body, { signal, open = openCha
       warn(`[${c.site}] ${c.model} HTTP ${up.status}，账号重试后切换到允许的备用站点 ${candidates[i + 1].site}`);
     } catch (e) {
       if (signal?.aborted) throw e;
-      const recoverable = e.transport === true || [401, 502, 503, 504].includes(e.status) || (isQuotaError(e.status, e.message) && cfg.pool?.switchSiteOnExhausted !== false);
+      const recoverable = e.transport === true || [401, 502, 503, 504].includes(e.status) || canSwitch(e.status,e.message,cfg);
       if (!hasNext || !recoverable) throw e;
       lastError = e;
       warn(`[${c.site}] ${c.model} ${e.message}，切换到允许的备用站点 ${candidates[i + 1].site}`);

@@ -163,13 +163,10 @@ export async function handleConsoleApi(ctx) {
       if (!['off', 'freeOnly', 'listed'].includes(b.routing?.fallbackMode)) throw new Error('全局备用站点模式无效');
       const max = Number(b.pool?.maxAccountsPerRequest);
       if (!Number.isInteger(max) || max < 1 || max > 20) throw new Error('每次尝试账号数需为 1–20');
-      cfg.routingPolicies = policies;
       const repaired=new Set(policies.map(p=>p.model));
-      cfg.invalidRoutingPolicies=(cfg.invalidRoutingPolicies||[]).filter(p=>!repaired.has(String(p.model||'').split('/').at(-1)));
-      cfg.blockedRoutingModels=blockedPolicyModels(cfg.invalidRoutingPolicies,cfg.sites);
-      cfg.routing = { fallbackMode: b.routing.fallbackMode };
-      cfg.pool = { ...cfg.pool, maxAccountsPerRequest: max, switchSiteOnExhausted: b.pool.switchSiteOnExhausted === true };
-      saveConfig(cfg);
+      const invalidRoutingPolicies=(cfg.invalidRoutingPolicies||[]).filter(p=>!repaired.has(String(p.model||'').split('/').at(-1)));
+      const next={...cfg,routingPolicies:policies,invalidRoutingPolicies,blockedRoutingModels:blockedPolicyModels(invalidRoutingPolicies,cfg.sites),routing:{fallbackMode:b.routing.fallbackMode},pool:{...cfg.pool,maxAccountsPerRequest:max,switchSiteOnExhausted:b.pool.switchSiteOnExhausted===true}};
+      saveConfig(next);Object.assign(cfg,next);
       return sendJson(res, 200, { ok: true });
     } catch (e) { return sendJson(res, 400, { error: e.message }); }
   }
@@ -262,9 +259,8 @@ export async function handleConsoleApi(ctx) {
     if (body.site && !cfg.sites[String(body.site)]) return sendJson(res, 400, { error: '未知站点' });
     const requestedSite = String(body.site || (cfg.sites[model.split('/')[0]] ? model.split('/')[0] : cfg.defaultSite));
     if (cfg.sites[requestedSite]?.enabled === false || !isLoggedIn(requestedSite)) return sendJson(res, 409, { error: '该渠道未登录或已停用，请先登录账号再选择模型。' });
-    cfg.defaultModel = body.site && !model.includes('/') ? `${body.site}/${model}` : model;
-    if (body.site) cfg.defaultSite = String(body.site);
-    saveConfig(cfg);
+    const next={...cfg,defaultModel:body.site && !model.includes('/') ? `${body.site}/${model}` : model,defaultSite:body.site?String(body.site):cfg.defaultSite};
+    saveConfig(next);Object.assign(cfg,next);
     return sendJson(res, 200, { ok: true, default_model: cfg.defaultModel, default_site: cfg.defaultSite });
   }
 
