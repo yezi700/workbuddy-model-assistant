@@ -108,6 +108,10 @@ export function toChatRequest(body) {
   // 模型由调用方注入
   if (body.model) chat.model = body.model;
 
+  if(body.reasoning?.effort!=null)chat.reasoning_effort=body.reasoning.effort;
+  else if(body.reasoning_effort!=null)chat.reasoning_effort=body.reasoning_effort;
+  if(body.reasoning?.summary!=null)chat.reasoning_summary=body.reasoning.summary;
+  if(body.context_window!=null)chat.context_window=body.context_window;
   if (body.max_output_tokens) chat.max_tokens = body.max_output_tokens;
   if (body.temperature !== undefined) chat.temperature = body.temperature;
   if (body.top_p !== undefined) chat.top_p = body.top_p;

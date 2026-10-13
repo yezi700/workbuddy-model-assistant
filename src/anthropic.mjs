@@ -81,6 +81,9 @@ export function toOpenAIBody(a) {
     messages,
     stream: a.stream !== false,
   };
+  if(a.output_config?.effort!=null)body.reasoning_effort=a.output_config.effort;
+  else if(a.reasoning_effort!=null)body.reasoning_effort=a.reasoning_effort;
+  if(a.context_window!=null)body.context_window=a.context_window;
   if (a.max_tokens) body.max_tokens = a.max_tokens;
   if (a.temperature !== undefined) body.temperature = a.temperature;
   if (a.top_p !== undefined) body.top_p = a.top_p;

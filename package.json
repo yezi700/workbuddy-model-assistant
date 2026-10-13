@@ -1,7 +1,7 @@
 {
   "name": "workbuddy-model-assistant",
   "productName": "WorkBuddy 模型助手",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "WorkBuddy / CodeBuddy 本机模型管理与 OpenAI 兼容代理桌面应用",
   "private": true,
   "type": "module",

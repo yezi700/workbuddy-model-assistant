@@ -1,4 +1,5 @@
 // 配置与路径：所有文件（配置、凭证、日志）一律限定在本项目目录内，绝不读写项目外文件。
+import {validateParameters} from './model-parameters.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -572,6 +573,13 @@ function loadConfigFrom(dir) {
   if (cfg.invalidRoutingPolicies !== undefined && !Array.isArray(cfg.invalidRoutingPolicies)) throw new Error('无效规则记录损坏，已停止启动以保护费用限制');
   cfg.invalidRoutingPolicies = [...(cfg.invalidRoutingPolicies || []), ...validated.invalid];
   cfg.blockedRoutingModels = blockedPolicyModels(cfg.invalidRoutingPolicies, cfg.sites);
+  if(cfg.modelParameters!==undefined){
+    if(!isPlainObject(cfg.modelParameters))throw new Error('模型参数配置损坏，请修复 modelParameters');
+    for(const [key,value] of Object.entries(cfg.modelParameters)){
+      if(!key.includes('/')||!cfg.sites[key.split('/')[0]])throw new Error('模型参数配置包含未知渠道');
+      validateParameters(value);
+    }
+  }
   if (!['off', 'freeOnly', 'listed'].includes(cfg.routing?.fallbackMode)) {
     lastIssues.push(`routing.fallbackMode 无效（当前 ${JSON.stringify(cfg.routing?.fallbackMode)}），已回退为 off`);
     cfg.routing = { ...(isPlainObject(cfg.routing) ? cfg.routing : {}), fallbackMode: 'off' };

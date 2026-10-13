@@ -29,6 +29,8 @@ export function normalizeModelCatalog(json, now=Date.now()) {
       catalogCredits:m.credits ?? null,baseCredits:base===null ? null : `x${base} credits`,
       priceStatus:unconfirmedZero ? 'inactive-promotion' : effective===null ? 'unknown' : 'official',
       badges,description,contextDefault,
+      reasoningEfforts:m.reasoning?.supportedEfforts || (m.reasoning?.effort ? [m.reasoning.effort] : []),reasoningDefault:m.reasoning?.defaultEffort || m.reasoning?.effort || null,
+      contextLengths:m.contextWindow?.supportedLengths || (m.maxInputTokens ? [m.maxInputTokens] : []),
       priceNote:unconfirmedZero ? '目录返回零倍率，但对应活动当前未生效；现价待确认' : promo ? `官方活动：${promo.badge?.label || '优惠'}${promo.schedule?.validUntil ? '，截至 '+promo.schedule.validUntil : ''}` : badges.length ? `官方活动标签：${badges.join('、')}；活动期限及剩余免费额度需在官方客户端确认` : null,
       priceExpiresAt:promo?.schedule?.validUntil ? Date.parse(promo.schedule.validUntil) : null,
       contextWindow:m.maxInputTokens || null,maxTokens:m.maxOutputTokens || null,

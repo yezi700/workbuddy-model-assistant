@@ -1,4 +1,5 @@
 import { parseMultiplier, isExcluded } from './router.mjs';
+import {parameterCapabilities} from './model-parameters.mjs';
 import {modelNameKey} from './model-docs.mjs';
 import reference from './workbuddy-reference.json' with { type: 'json' };
 
@@ -19,6 +20,7 @@ export async function consoleModels(cfg, { includeLoggedOut = true, loggedIn, ge
       const docModel=doc?.models?.find(m=>modelNameKey(m.name)===modelNameKey(info.name||info.id));
       data.push({ id: `${site}/${info.id}`, site, name: info.name || info.id,
         credits, multiplier: Number.isFinite(mult) ? mult : null, free: logged && mult === 0,
+        parameter_capabilities:parameterCapabilities(info),parameters:cfg.modelParameters?.[`${site}/${info.id}`] || {},
         description: info.description || docModel?.description || null, activity_labels:info.badges || [],
         documentation_url:doc?.url || null, documentation_updated_at:doc?.fetchedAt ? new Date(doc.fetchedAt).toISOString() : null, documentation_status:doc?.source || null, documentation_matched:!!docModel,
         context_default:info.contextDefault || null, context: info.contextWindow || null, max_output: info.maxTokens || null,

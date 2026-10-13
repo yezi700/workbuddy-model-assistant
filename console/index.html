@@ -4,6 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>WorkBuddy 模型助手</title>
+
+
 <script>
   // 首屏防闪烁：在样式解析前就把主题定下来，避免深色用户看到一瞬白屏
   (function () {
@@ -419,7 +421,7 @@
   <section id="tab-models" class="hidden">
     <div class="card">
       <div class="row">
-        <b>当前选择：</b><span id="curDefault" class="pill ok"></span>
+        <b>当前选择：</b><span id="curDefault" class="pill ok"></span><button class="btn" onclick="editCurrentParameters()">当前模型参数</button>
         <span class="grow"></span>
         <input id="modelFilter" placeholder="搜索模型 ID / 名称" style="width:220px" oninput="renderModels()" />
         <button class="btn" onclick="loadModels(true)">刷新接口与官方文档</button>
@@ -538,6 +540,18 @@
     </div>
   </section>
 </main>
+
+<dialog id="parameterDialog" aria-labelledby="parameterTitle" style="width:min(520px,90vw);border:1px solid var(--line);border-radius:14px;padding:24px;background:var(--surface);color:var(--fg)">
+  <h3 id="parameterTitle">模型参数</h3>
+  <p class="hint">只影响这里选中的模型和渠道，保存后从下一次请求生效。</p>
+  <p><label for="parameterEffort">思考强度</label><br><select id="parameterEffort" style="width:100%;margin-top:8px"></select></p>
+  <p class="hint">低档响应更快，高档投入更多推理；可选档位来自官方目录。</p>
+  <p><label for="parameterWindow">上下文窗口</label><br><select id="parameterWindow" style="width:100%;margin-top:8px"></select></p>
+  <p class="hint">控制代理保留的对话历史预算，不是回复长度。窗口大时可能消耗更多额度；超出预算会裁剪较早的消息，保留系统提示和最近对话。</p>
+  <p class="hint">客户端明确传入思考强度或窗口时，会覆盖这里的默认值。切换备用渠道后使用该渠道自己的参数。</p>
+  <p class="hint" id="parameterMessage" role="status" aria-live="polite"></p>
+  <div class="row"><button class="btn primary" id="parameterSave" onclick="saveModelParameters()">保存</button><button class="btn" id="parameterReset" onclick="saveModelParameters(true)">恢复默认</button><button class="btn" id="parameterClose" onclick="$('parameterDialog').close()">取消</button></div>
+</dialog>
 
 <script>
 let TOKEN = window.__WB_TOKEN__ || '';
@@ -761,12 +775,13 @@ function renderModels() {
       <td>${esc(friendlySite(m.site))}</td>
       <td>${multText(m)}<div class="muted" style="font-size:11px">${esc(m.price_note || '')}</div>${m.catalog_error ? '<div class="muted" style="font-size:11px">接口读取失败，当前为缓存或参考信息</div>' : ''}${m.price_updated_at ? `<div class="muted" style="font-size:11px">${m.catalog_source === 'upstream(cache)' ? '缓存' : '更新'}：${esc(new Date(m.price_updated_at).toLocaleString('zh-CN'))}</div>` : ''}</td>
       <td>${m.context ? Math.round(m.context / 1000) + 'k' : '—'}${m.context_default ? `<div class="muted" style="font-size:11px">默认 ${Math.round(m.context_default / 1000)}k</div>` : ''}${m.max_output ? `<div class="muted" style="font-size:11px">输出上限 ${Math.round(m.max_output / 1000)}k</div>` : ''}</td>
-      <td class="muted">${esc(m.description || m.name || '')}<div style="font-size:11px">${esc(m.availability_note || '')}</div>${m.documentation_url ? `<a href="${esc(m.documentation_url)}" target="_blank" rel="noopener">官方文档${m.documentation_status === 'cache' ? '（缓存）' : m.documentation_status === 'unavailable' ? '（暂无法读取）' : ''}</a>` : ''}</td>
+      <td class="muted">${esc(m.description || m.name || '')}<div style="font-size:11px">${esc(m.availability_note || '')}</div>${m.parameters?.reasoning_effort || m.parameters?.context_window ? `<div class="muted" style="font-size:11px">已设置：${m.parameters.reasoning_effort ? '思考'+effortName(m.parameters.reasoning_effort) : ''} ${m.parameters.context_window ? '窗口'+m.parameters.context_window/1000+'K' : ''}</div>` : ''}${m.documentation_url ? `<a href="${esc(m.documentation_url)}" target="_blank" rel="noopener">官方文档${m.documentation_status === 'cache' ? '（缓存）' : m.documentation_status === 'unavailable' ? '（暂无法读取）' : ''}</a>` : ''}</td>
       <td class="probe-cell" data-id="${esc(m.id)}" data-site="${esc(m.site)}">—</td>
-      <td>${!m.selectable ? `<span class="pill">${m.blocked_reason ? '规则损坏，已暂停' : '请先登录'}</span>` : isDef ? '<span class="pill ok">当前默认</span>' : `<button class="btn model-select" data-model="${esc(m.id)}" data-site="${esc(m.site)}">使用该渠道</button>`} <button class="btn route-edit" data-model="${esc(m.alias_of || m.id.split('/').slice(1).join('/') || m.id)}" data-site="${esc(m.site)}">调整使用规则</button></td>
+      <td>${!m.selectable ? `<span class="pill">${m.blocked_reason ? '规则损坏，已暂停' : '请先登录'}</span>` : isDef ? '<span class="pill ok">当前默认</span>' : `<button class="btn model-select" data-model="${esc(m.id)}" data-site="${esc(m.site)}">使用该渠道</button>`} <button class="btn model-params" data-id="${esc(m.id)}">模型参数</button> <button class="btn route-edit" data-model="${esc(m.alias_of || m.id.split('/').slice(1).join('/') || m.id)}" data-site="${esc(m.site)}">调整使用规则</button></td>
     </tr>`;
   }).join('');
   $('modelTable').querySelectorAll('.model-select').forEach(b => b.onclick = async () => { try { b.disabled=true; await setDefault(b.dataset.model,b.dataset.site); } catch(e) { alert('切换失败：'+e.message); b.disabled=false; } });
+  $('modelTable').querySelectorAll('.model-params').forEach(b => b.onclick = () => editModelParameters(b.dataset.id));
   $('modelTable').querySelectorAll('.route-edit').forEach(b => b.onclick = async () => { document.querySelector('nav button[data-tab="routing"]').click(); await loadRouting(); editRoute(b.dataset.model, b.dataset.site); });
 }
 
@@ -776,6 +791,36 @@ async function setDefault(model, site) {
   $('defmodel').innerHTML = `当前选择 <b>${esc(friendlyModel(r.default_model.split('/').at(-1)))}</b>`;
   await loadModels();
   await loadState();
+}
+
+function editCurrentParameters() {
+  const route=STATE?.selected_route;
+  const id=route?.site&&route?.model ? `${route.site}/${route.model}` : MODELS?.default_model;
+  editModelParameters(id);
+}
+const effortName=e=>({minimal:'极低',low:'低',medium:'中',high:'高',xhigh:'极高',max:'最高'}[e]||e);
+function editModelParameters(id) {
+  const m=MODELS?.data.find(x=>x.id===id);
+  if(!m){alert('请先选择模型并刷新目录');return;}
+  const d=$('parameterDialog');d.dataset.id=id;
+  $('parameterTitle').textContent=`${friendlyModel(m.name||m.id)} · ${friendlySite(m.site)}`;
+  const caps=m.parameter_capabilities||{efforts:[],windows:[]};
+  $('parameterEffort').innerHTML=`<option value="">跟随上游默认${caps.defaultEffort?'（'+effortName(caps.defaultEffort)+'）':''}</option>`+(caps.efforts||[]).map(e=>`<option value="${esc(e)}">${esc(effortName(e))}</option>`).join('');
+  $('parameterWindow').innerHTML=`<option value="">使用代理自动处理</option>`+(caps.windows||[]).map(n=>`<option value="${n}">${n>=1000000?n/1000000+'M':n/1000+'K'}${n===caps.defaultWindow?'（官方默认）':''}</option>`).join('');
+  $('parameterEffort').value=m.parameters?.reasoning_effort||'';
+  $('parameterWindow').value=String(m.parameters?.context_window||'');
+  $('parameterEffort').disabled=!caps.efforts?.length;
+  $('parameterWindow').disabled=!caps.windows?.length;
+  $('parameterMessage').textContent=(!caps.efforts?.length?'官方目录未提供可调思考档位。':'')+(!caps.windows?.length?'官方目录未提供可选窗口。':'');
+  d.showModal();$('parameterClose').focus();
+}
+async function saveModelParameters(reset=false) {
+  const d=$('parameterDialog'),m=MODELS?.data.find(x=>x.id===d.dataset.id);if(!m)return;
+  const parameters=reset?{}:{reasoning_effort:$('parameterEffort').value||null,context_window:$('parameterWindow').value?Number($('parameterWindow').value):null};
+  $('parameterSave').disabled=true;$('parameterReset').disabled=true;
+  try{await api('/model-parameters',{method:'POST',body:{site:m.site,model:m.id.split('/').slice(1).join('/'),parameters}});m.parameters=parameters;d.close();renderModels();}
+  catch(e){$('parameterMessage').textContent=e.message;}
+  finally{$('parameterSave').disabled=false;$('parameterReset').disabled=false;}
 }
 
 async function probeVisible() {

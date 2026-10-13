@@ -1,6 +1,7 @@
 // 控制台后端 API：状态总览 / 模型清单 / 一键切换默认模型 / 日志 / 用量 / 探测 / 登录 / 停服
 // 仅本机可用（服务只监听 127.0.0.1），鉴权用控制台会话 token 或 config.json 的 apiKey。
 import fs from 'node:fs';
+import {validateParameters} from './model-parameters.mjs';
 import path from 'node:path';
 import { ROOT, siteKeys, saveConfig, paths, authPathFor, authKeys, primaryKey, blockedPolicyModels } from './config.mjs';
 import { getAuth, isLoggedIn, accountSnapshot } from './auth.mjs';
@@ -233,6 +234,24 @@ export async function handleConsoleApi(ctx) {
       model_routes: cfg.modelRoutes || {},
       data: list,
     });
+  }
+
+  if(p==='/model-parameters' && method==='POST'){
+    const b=ctx.body||{},site=String(b.site||''),model=String(b.model||'');
+    if(!cfg.sites[site]||!model||model.includes('/')||model.length>160)return sendJson(res,400,{error:'渠道或模型无效'});
+    let next;
+    try {
+      const requested=validateParameters(b.parameters);
+      if(Object.keys(requested).length){
+        const cat=await getCatalog(cfg,site);const info=cat.models.get(model);
+        if(!info||info.seed||cat.source==='seed')return sendJson(res,409,{error:'官方目录未确认该模型能力，请先登录并刷新目录'});
+        next=validateParameters(requested,info);
+      }else next={};
+      const modelParameters={...(cfg.modelParameters||{})};const key=`${site}/${model}`;
+      if(Object.keys(next).length)modelParameters[key]=next;else delete modelParameters[key];
+      saveConfig({...cfg,modelParameters});cfg.modelParameters=modelParameters;
+      return sendJson(res,200,{ok:true,parameters:next});
+    }catch(e){return sendJson(res,e.status||500,{error:e.message});}
   }
 
   // ---- 一键切换默认模型（Trae 侧只配 model=default） ----

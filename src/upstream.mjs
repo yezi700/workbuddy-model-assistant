@@ -3,6 +3,7 @@
 //   - SSE 读取（带首字节/空闲超时，客户端断开即中止）
 //   - 模型清单（含积分倍率）、额度查询
 import crypto from 'node:crypto';
+import {applyModelParameters} from './model-parameters.mjs';
 import { getAuth, ensureToken } from './auth.mjs';
 import { markSuccess, markFailure, isQuotaError, usableCount, pickAccount, getAccount } from './pool.mjs';
 import { fitMessages, estimateMessages, learnedLimit, isTooLongError } from './compress.mjs';
@@ -111,13 +112,14 @@ export function prepareBody(cfg, src) {
  *
  * 返回裁剪统计；没裁返回 null。
  */
-export function applyContextFit(cfg, body, { site = null, limitOverride = null } = {}) {
+export function applyContextFit(cfg, body, { site = null, limitOverride = null, selectedWindow = null } = {}) {
   const conf = cfg.context || {};
-  if (conf.enabled === false) return null;
+  if (conf.enabled === false && !selectedWindow) return null;
   if (!Array.isArray(body.messages) || !body.messages.length) return null;
 
   const model = String(body.model || '');
-  const limit = limitOverride || (site ? learnedLimit(site, model) : null);
+  const discovered=limitOverride || (site ? learnedLimit(site, model) : null);
+  const limit=selectedWindow ? Math.min(selectedWindow,discovered || Infinity) : discovered;
   if (!Number.isFinite(limit) || limit <= 0) return null; // 不知道上限就先原样发，撞墙后再学
 
   const { messages, stats } = fitMessages(body.messages, {
@@ -182,8 +184,16 @@ export async function openChat(cfg, site, body, { signal, exclude = [], accountI
   // 使用本次选定账号，避免并发请求覆盖站点级当前账号后拿错凭证。
   const auth = getAccount(site, usedAccount) || getAuth(site);
   const model = String(body?.model || '');
-  const payload = prepareBody(cfg, body);
-  const fit = applyContextFit(cfg, payload, { site });
+  let info;
+  if(cfg.modelParameters?.[`${site}/${model}`] || body.reasoning_effort!=null || body.reasoning?.effort!=null || body.context_window!=null){
+    const {getCatalog}=await import('./router.mjs');
+    const cat=await getCatalog(cfg,site);info=cat.models.get(model);
+    if(!info || info.seed || cat.source==='seed')throw Object.assign(new Error('当前模型参数能力未确认，请刷新官方目录后重试'),{status:409});
+  }
+  const parameters=applyModelParameters(cfg,site,body,info);
+  const payload = prepareBody(cfg, parameters.body);
+  if(parameters.body.reasoning_effort && !payload.reasoning_effort)throw Object.assign(new Error('stripFields 配置剔除了思考强度参数，请移除冲突项'),{status:400});
+  const fit = applyContextFit(cfg, payload, { site,selectedWindow:parameters.contextWindow });
   if (fit) {
     warn(
       `[${site}] ${model} 上下文超限，已自动压缩：丢弃 ${fit.dropped} 条、截断 ${fit.truncated} 条，`
