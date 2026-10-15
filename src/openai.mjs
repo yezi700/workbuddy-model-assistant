@@ -83,7 +83,7 @@ export async function handleChatCompletions(ctx) {
   model = opened.model;
   if (!up.ok) {
     requestLog({ site, model, mode: wantsStream ? 'stream' : 'json', status: up.status, ms: Date.now() - started, note: 'upstream_reject' });
-    return sendError(res, up.status, upstreamErrorMessage(up.status, up.text, site));
+    return sendError(res, up.status, upstreamErrorMessage(up.status, up.text, site), up.code ? 'insufficient_quota' : 'upstream_error', up.code ? {code:up.code,retryable:false,accounts:up.rotation} : {});
   }
 
   if (wantsStream) {

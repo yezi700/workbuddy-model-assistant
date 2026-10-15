@@ -31,8 +31,8 @@ export function sendJson(res, status, obj) {
   res.end(body);
 }
 
-export function sendError(res, status, message, type = 'upstream_error') {
-  sendJson(res, status, { error: { message, type, code: status } });
+export function sendError(res, status, message, type = 'upstream_error', extra = {}) {
+  sendJson(res, status, { error: { message, type, code: status, ...extra } });
 }
 
 /** 带背压的写出：客户端读得慢时等待 drain，避免内存堆积。 */

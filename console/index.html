@@ -1023,7 +1023,7 @@ function renderAccounts() {
         : '<div class="muted" style="margin:8px 0">还没有登录。点击“登录 / 添加账号”，在官方页面完成授权。</div>'}
       <div class="row" style="margin-top:10px">
         <button class="btn primary" data-action="login" data-site="${esc(s.site)}">登录 / 添加账号</button>
-        <button class="btn" data-action="refresh" data-site="${esc(s.site)}">刷新余额</button>
+        <button class="btn" data-action="refresh" data-site="${esc(s.site)}">刷新余额</button><button class="btn" data-action="reload-accounts" data-site="${esc(s.site)}">重新读取账号</button>
         ${accounts.length ? `<button class="btn danger" data-action="logout" data-site="${esc(s.site)}">退出该渠道所有账号</button>` : ''}
       </div>
     </div>`;
@@ -1067,6 +1067,7 @@ $('accountCards').addEventListener('click', (event) => {
   const run = {
     login: () => startLogin(site),
     refresh: () => refreshPool(site),
+    'reload-accounts':()=>refreshPool(site,true),
     logout: () => logout(site),
     rename: () => renameAccount(site, id, label),
     toggle: () => toggleAccount(site, id, b.dataset.enabled === 'true'),
@@ -1106,8 +1107,8 @@ async function removeAccount(site, id, label) {
   await poolPost('/pool/account/remove', { site, id });
 }
 
-async function refreshPool(site) {
-  const r = await api('/pool?site=' + encodeURIComponent(site));
+async function refreshPool(site,reload=false) {
+  const r = await api('/pool?site=' + encodeURIComponent(site)+(reload?'&reload=1&credit=0':''));
   STATE.sites = STATE.sites.map((s) => (s.site === site ? { ...s, accounts: r.accounts,account_count:r.accounts.length,account_usable:r.accounts.filter(a=>a.usable).length } : s));
   renderAccounts();
 }

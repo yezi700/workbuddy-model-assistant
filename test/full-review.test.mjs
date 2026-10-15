@@ -60,4 +60,5 @@ test('真实错误结构跨国内账号、国际账号轮换，三个协议成�
 });
 test('免费渠道都不可用时停止，429 不绕过免费保护调用收费备用渠道',async t=>{
  const f=await fixture(t,{paidFallback:true});const r=await f.post('/v1/chat/completions',{model:'step',messages:[{role:'user',content:'mock'}]});assert.equal(r.status,429);await r.text();assert.deepEqual(f.calls,['Bearer A']);
+ const next=await f.post('/v1/chat/completions',{model:'step',messages:[{role:'user',content:'mock'}]});const error=(await next.json()).error;assert.equal(error.type,'insufficient_quota');assert.equal(error.retryable,false);assert.equal(error.accounts.total,1);assert.equal(error.accounts.available,0);
 });

@@ -14,6 +14,7 @@ import {
   resetAccountState,
   flushPool,
   pickAccount,
+  reloadPool,
 } from './pool.mjs';
 import { getCatalog, resolveTarget } from './router.mjs';
 import {getModelDocument} from './model-docs.mjs';
@@ -291,6 +292,7 @@ export async function handleConsoleApi(ctx) {
   if (p === '/pool' && method === 'GET') {
     const site = String(url.searchParams.get('site') || cfg.defaultSite);
     if (!cfg.sites[site]) return sendJson(res, 400, { error: `未知站点 ${site}` });
+    if(url.searchParams.get('reload')==='1'){reloadPool(site);clearCreditCache(site);}
     const withCredit = url.searchParams.get('credit') !== '0';
     const accounts = accountSnapshot(site);
     if (withCredit && supportsCreditQuery(cfg, site)) {

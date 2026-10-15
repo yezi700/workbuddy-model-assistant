@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import {activeModelLimit} from './model-quota.mjs';
 import {applyModelParameters} from './model-parameters.mjs';
 import { getAuth, ensureToken } from './auth.mjs';
-import { markSuccess, markFailure, isQuotaError, usableCount, pickAccount, getAccount, listAccounts } from './pool.mjs';
+import { markSuccess, markFailure, isQuotaError, usableCount, pickAccount, getAccount, listAccounts, rotationStatus } from './pool.mjs';
 import { fitMessages, estimateMessages, learnedLimit, isTooLongError } from './compress.mjs';
 import { chatHeaders, billingHeaders } from './headers.mjs';
 import { warn } from './log.mjs';
@@ -639,7 +639,11 @@ export async function openChatRotating(cfg, site, body, { signal, maxAccounts = 
   for (let i = 0; i < 上限; i++) {
     const picked = pickAccount(site, { exclude: tried,model:body.model }) || pickAccount(site, { exclude: tried, fallback: true,model:body.model });
     if(!picked && listAccounts(site).some(a=>a.enabled!==false && activeModelLimit(a,body.model))){
-      return {up:{ok:false,status:429,text:'该渠道当前可用账号的此模型免费额度已用完，等待重置或尝试允许的备用渠道',site},tried};
+      const rotation=rotationStatus(site,body.model);
+      const notes=rotation.accounts.map(a=>`账号${a.number}：${({model_quota:'此模型额度受限',disabled:'已禁用',missing_token:'缺少凭证',account_quota:'账号积分不足',cooldown:'短暂冷却',available:'可用'})[a.state]}${a.reset_at?'，重置于 '+new Date(a.reset_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}):''}`).join('；');
+      const text=`${body.model} 此模型可用账号 ${rotation.available}/${rotation.total}。${notes}。请在登录账号页添加或启用另一个账号，或等待额度重置。`;
+      warn(`[${site}] ${text}`);
+      return {up:{ok:false,status:429,text,site,code:'model_quota_exhausted',rotation},tried};
     }
     try {
       up = await inspectOpening(await openChat(cfg, site, body, { signal, exclude: tried, accountId: picked?.id }));
@@ -700,7 +704,7 @@ export function upstreamErrorMessage(status, text, site = '') {  let msg = text 
     404: '上游 404：接口偶发不可用，稍后重试',
     429: '上游 429：触发限流，稍后重试',
   };
-  const head = map[status] || `上游 HTTP ${status}`;
+  const head = status===429 && /此模型可用账号/.test(msg) ? '此模型账号额度暂不可用' : map[status] || `上游 HTTP ${status}`;
   warn(`${prefix}上游返回 ${status}：${String(msg).slice(0, 200)}`);
   return `${prefix}${head}：${String(msg).slice(0, 500)}`;
 }

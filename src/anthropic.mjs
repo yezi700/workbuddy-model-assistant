@@ -139,7 +139,7 @@ export async function handleMessages(ctx) {
   openaiBody.model = model;
   if (!up.ok) {
     requestLog({ site, model, mode: wantsStream ? 'anthropic-stream' : 'anthropic-json', status: up.status, ms: Date.now() - started, note: 'upstream_reject' });
-    return sendError(res, up.status, upstreamErrorMessage(up.status, up.text, site), 'api_error');
+    return sendError(res, up.status, upstreamErrorMessage(up.status, up.text, site), up.code ? 'insufficient_quota' : 'api_error', up.code ? {code:up.code,retryable:false,accounts:up.rotation} : {});
   }
 
   if (!wantsStream) {

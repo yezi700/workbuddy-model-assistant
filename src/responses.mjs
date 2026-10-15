@@ -266,7 +266,7 @@ export async function handleResponses(ctx) {
   chatReq.model = model;
   if (!up.ok) {
     requestLog({ site, model, mode: 'responses', status: up.status, ms: Date.now() - started, note: 'upstream_reject' });
-    return sendError(res, up.status, upstreamErrorMessage(up.status, up.text, site));
+    return sendError(res, up.status, upstreamErrorMessage(up.status, up.text, site), up.code ? 'insufficient_quota' : 'upstream_error', up.code ? {code:up.code,retryable:false,accounts:up.rotation} : {});
   }
 
   const responseId = rid('resp');

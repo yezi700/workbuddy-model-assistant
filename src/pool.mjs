@@ -62,15 +62,15 @@ function newId() {
 function readPoolFile(site) {
   const file = poolPathFor(site);
   const key = cacheKey(site);
-  let mtime = 0;
+  let signature;
   try {
-    mtime = fs.statSync(file).mtimeMs;
+    const stat=fs.statSync(file);signature=`${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}:${stat.ino}`;
   } catch {
     cache.delete(key);
     return null;
   }
   const hit = cache.get(key);
-  if (hit && hit.mtime === mtime) return hit.pool;
+  if (hit && hit.signature === signature) return hit.pool;
   let pool;
   try {
     pool = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -80,14 +80,16 @@ function readPoolFile(site) {
   }
   if (!Array.isArray(pool.accounts)) pool.accounts = [];
   if (!Number.isFinite(pool.nextLabel)) pool.nextLabel = pool.accounts.length + 1;
-  cache.set(key, { mtime, pool });
+  cache.set(key, { signature, pool });
   return pool;
 }
 
 function writePool(site, pool) {
   const file = poolPathFor(site);
   writeFileAtomic(file, JSON.stringify(pool, null, 2) + '\n');
-  cache.set(cacheKey(site), { mtime: fs.statSync(file).mtimeMs, pool });
+  const timer=saveTimers.get(cacheKey(site));if(timer){clearTimeout(timer);saveTimers.delete(cacheKey(site));}
+  const stat=fs.statSync(file);
+  cache.set(cacheKey(site), { signature:`${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}:${stat.ino}`,pool });
   return pool;
 }
 
@@ -215,7 +217,8 @@ export function usableCount(site, now = Date.now(), exclude = [], model = null) 
  * 因此热路径用节流写，且没有池文件时直接跳过。
  */
 function mutate(site, fn, { immediate = true } = {}) {
-  const pool = loadPool(site);
+  const current=loadPool(site);
+  const pool = immediate ? structuredClone(current) : current;
   const r = fn(pool);
   if (immediate) savePool(site, pool);
   else scheduleSave(site, pool);
@@ -232,6 +235,8 @@ function scheduleSave(site, pool) {
   const t = setTimeout(() => {
     saveTimers.delete(key);
     try {
+      // 外部导入/替换过账号池时，旧回调不能把新账号列表覆盖回去。
+      if(loadPool(site)!==pool)return;
       savePool(site, pool);
     } catch (e) {
       warn(`[${site}] 账号池写入失败：`, e.message);
@@ -253,6 +258,17 @@ export function flushPool() {
     }
   }
   saveTimers.clear();
+}
+
+/** 从磁盘重新核对账号；先提交同一文件尚未保存的健康状态。 */
+export function reloadPool(site){flushPool();cache.delete(cacheKey(site));return loadPool(site);}
+export function rotationStatus(site,model,now=Date.now()){
+  const accounts=loadPool(site).accounts.map((a,index)=>{
+    const limit=activeModelLimit(a,model,now);
+    const state=a.enabled===false?'disabled':!a.accessToken?'missing_token':limit?'model_quota':a.exhaustedAt&&now-a.exhaustedAt<EXHAUST_TTL_MS?'account_quota':a.cooldownUntil>now?'cooldown':'available';
+    return {number:index+1,state,reset_at:limit?new Date(limit.until).toISOString():state==='cooldown'?new Date(a.cooldownUntil).toISOString():null};
+  });
+  return {total:accounts.length,enabled:accounts.filter(a=>!['disabled','missing_token'].includes(a.state)).length,available:accounts.filter(a=>a.state==='available').length,accounts};
 }
 
 /**
@@ -379,7 +395,7 @@ export function isQuotaError(status, message = '') {
 
 /** 往池里加一个账号（登录成功后调用）。返回新账号。 */
 export function addAccount(site, auth, { label } = {}) {
-  const pool = loadPool(site);
+  const pool = structuredClone(loadPool(site));
   const uid = auth.uid ? String(auth.uid) : null;
 
   // 同一 uid 已存在 → 覆盖更新（重新登录同一个号，不该出现两条）
@@ -440,7 +456,7 @@ export function addAccount(site, auth, { label } = {}) {
 
 /** 删除账号。若删的是旧版默认账号，同时删掉旧凭证文件，避免它又被兼容读回来。 */
 export function removeAccount(site, id) {
-  const pool = loadPool(site);
+  const pool = structuredClone(loadPool(site));
   const idx = pool.accounts.findIndex((a) => a.id === id);
   if (idx < 0) return false;
   const [removed] = pool.accounts.splice(idx, 1);

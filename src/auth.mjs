@@ -113,7 +113,7 @@ function setCurrentAccount(site, account) {
  */
 function poolStamp(site) {
   try {
-    return fs.statSync(poolPathFor(site)).mtimeMs;
+    const st=fs.statSync(poolPathFor(site));return `${st.mtimeMs}:${st.ctimeMs}:${st.size}:${st.ino}`;
   } catch {
     return 0;
   }
