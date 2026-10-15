@@ -3,7 +3,6 @@
 //   - SSE 读取（带首字节/空闲超时，客户端断开即中止）
 //   - 模型清单（含积分倍率）、额度查询
 import crypto from 'node:crypto';
-import {activeModelLimit} from './model-quota.mjs';
 import {applyModelParameters} from './model-parameters.mjs';
 import { getAuth, ensureToken } from './auth.mjs';
 import { markSuccess, markFailure, isQuotaError, usableCount, pickAccount, getAccount, listAccounts, rotationStatus } from './pool.mjs';
@@ -616,7 +615,7 @@ export async function inspectOpening(up) {
       if (parsed.kind === 'error') {
         up.close();
         await frames.return?.();
-        return { ok: false, status: isQuotaError(0, parsed.message) || /rate[ _-]?limit|too many requests|限流|频率/i.test(parsed.message) ? 429 : 502, text: parsed.message, accountId: up.accountId, site: up.site };
+        return { ok: false, status: isQuotaError(0, parsed.message) || /rate[ _-]?limit|too many requests|限流|频率/i.test(parsed.message) ? 429 : 502, text: next.value, accountId: up.accountId, site: up.site };
       }
       buffered.push(next.value);
       const c = parsed.obj?.choices?.[0];
@@ -631,22 +630,45 @@ export function isAccountSpecificFailure(status, text) {
   return status === 401 || status === 403 || status === 429 || status >= 500 || isQuotaError(status, text);
 }
 
+// Only honor explicit upstream retry advice before any output has been delivered.
+// Quota/auth failures must rotate instead; an internal error gets at most one retry.
+export async function openWithTransientRetry(open, {signal, delayMs = 1000, onRetry} = {}) {
+  const first = await open();
+  if (first.ok || signal?.aborted || first.status < 500 || isQuotaError(first.status, first.text)) return first;
+  let error;
+  try { error = JSON.parse(first.text); } catch { return first; }
+  if (error.code !== 10000 || error.retry_policy?.retry !== true || error.extError?.code !== 'internal_server_error') return first;
+  onRetry?.();
+  await new Promise((resolve, reject) => {
+    const abort = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); reject(signal.reason || new Error('client closed')); };
+    const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, delayMs);
+    signal?.addEventListener('abort', abort, {once:true});
+    if (signal?.aborted) abort();
+  });
+  return open();
+}
+
 export async function openChatRotating(cfg, site, body, { signal, maxAccounts = 0 } = {}) {
   const tried = [];
   const 上限 = maxAccounts > 0 ? maxAccounts : Math.max(1, Number(cfg.pool?.maxAccountsPerRequest ?? 3));
   let up = null;
 
   for (let i = 0; i < 上限; i++) {
-    const picked = pickAccount(site, { exclude: tried,model:body.model }) || pickAccount(site, { exclude: tried, fallback: true,model:body.model });
-    if(!picked && listAccounts(site).some(a=>a.enabled!==false && activeModelLimit(a,body.model))){
+    const picked = pickAccount(site, { exclude: tried,model:body.model });
+    if(!picked && listAccounts(site).length){
       const rotation=rotationStatus(site,body.model);
       const notes=rotation.accounts.map(a=>`账号${a.number}：${({model_quota:'此模型额度受限',disabled:'已禁用',missing_token:'缺少凭证',account_quota:'账号积分不足',cooldown:'短暂冷却',available:'可用'})[a.state]}${a.reset_at?'，重置于 '+new Date(a.reset_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}):''}`).join('；');
-      const text=`${body.model} 此模型可用账号 ${rotation.available}/${rotation.total}。${notes}。请在登录账号页添加或启用另一个账号，或等待额度重置。`;
+      const cooling = rotation.accounts.some(a=>a.state==='cooldown');
+      const quota = !cooling && rotation.accounts.some(a=>['model_quota','account_quota'].includes(a.state));
+      const text=`${body.model} 此模型可用账号 ${rotation.available}/${rotation.total}。${notes}。${cooling?'部分账号调用失败，冷却结束后自动重新参与选择。':'请在登录账号页添加或启用另一个账号，或等待额度重置。'}`;
       warn(`[${site}] ${text}`);
-      return {up:{ok:false,status:429,text,site,code:'model_quota_exhausted',rotation},tried};
+      return {up:{ok:false,status:quota?429:503,text,site,code:quota?'model_quota_exhausted':'accounts_temporarily_unavailable',rotation},tried};
     }
     try {
-      up = await inspectOpening(await openChat(cfg, site, body, { signal, exclude: tried, accountId: picked?.id }));
+      up = await openWithTransientRetry(
+        async () => inspectOpening(await openChat(cfg, site, body, { signal, exclude: tried, accountId: picked?.id })),
+        {signal, onRetry:()=>warn(`[${site}] 上游临时内部错误（10000），按上游建议原账号补试一次`)},
+      );
     } catch (e) {
       if (signal?.aborted || !picked || !([401, 502, 503, 504].includes(e.status) || e.transport)) throw e;
       markFailure(site, picked.id, { status: e.status || 0, message: e.message });
@@ -693,6 +715,7 @@ export function upstreamErrorMessage(status, text, site = '') {  let msg = text 
   try {
     const j = JSON.parse(text);
     msg = j.msg || j.error?.message || j.message || text;
+    if(j.code===10000 && j.extError?.code==='internal_server_error')msg='上游内部错误（10000），不代表账号额度耗尽。请稍后重试；若持续发生，请先在官方 WorkBuddy 中确认该账号能否使用此模型。';
   } catch {
     if (status === 500 && /<html/i.test(msg)) msg = '上游网关 500（该接口在该站点不可用或临时故障）';
     else if (/<html/i.test(msg)) msg = msg.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();

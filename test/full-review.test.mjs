@@ -28,7 +28,7 @@ test('保存规则的磁盘写入失败不能改变内存中的免费保护',asy
  try{fs.renameSync=()=>{throw Error('mock disk failure');};await handleConsoleApi({cfg,req:{method:'POST'},res,url:new URL('http://localhost/console/api/routing'),body:{policies:[{...policy,requireFree:false}],routing:{fallbackMode:'listed'},pool:{maxAccountsPerRequest:1,switchSiteOnExhausted:false}}});}finally{fs.renameSync=rename;}
  assert.equal(status,400);assert.deepEqual(cfg,previous);assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir,'config.json'),'utf8')),previous);
 });
-async function fixture(t,{paidFallback=false}={}){
+async function fixture(t,{paidFallback=false,transientSecond=false}={}){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'wb-switch-review-')),calls=[];
  const reset=new Date(Date.now()+86400000).toISOString().slice(0,19).replace('T',' ')+' UTC+0';
  const msg=`您的使用量已超出频率限制，将在 ${reset} 重置，您也可以切换其他模型继续使用。`;
@@ -38,6 +38,10 @@ async function fixture(t,{paidFallback=false}={}){
   if(req.url==='/v2/chat/completions'){
    const token=req.headers.authorization;calls.push(token);
    if(token==='Bearer A'){res.writeHead(429,{'Content-Type':'application/json'});res.end(JSON.stringify({code:6004,msg}));return;}
+   if(transientSecond && token==='Bearer B'){
+    if(calls.filter(c=>c===token).length===1){res.writeHead(500,{'Content-Type':'application/json'});res.end(JSON.stringify({code:10000,msg:'invoke model error',retry_policy:{retry:true},extError:{code:'internal_server_error'}}));return;}
+    res.setHeader('Content-Type','text/event-stream');res.end('data: '+JSON.stringify({choices:[{delta:{content:'mock recovered'},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n');return;
+   }
    res.setHeader('Content-Type','text/event-stream');
    if(token==='Bearer B'){res.end('data: '+JSON.stringify({code:6004,msg})+'\n\n');return;}
    res.end('data: '+JSON.stringify({choices:[{delta:{content:'mock success'},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n');return;
@@ -61,4 +65,7 @@ test('真实错误结构跨国内账号、国际账号轮换，三个协议成�
 test('免费渠道都不可用时停止，429 不绕过免费保护调用收费备用渠道',async t=>{
  const f=await fixture(t,{paidFallback:true});const r=await f.post('/v1/chat/completions',{model:'step',messages:[{role:'user',content:'mock'}]});assert.equal(r.status,429);await r.text();assert.deepEqual(f.calls,['Bearer A']);
  const next=await f.post('/v1/chat/completions',{model:'step',messages:[{role:'user',content:'mock'}]});const error=(await next.json()).error;assert.equal(error.type,'insufficient_quota');assert.equal(error.retryable,false);assert.equal(error.accounts.total,1);assert.equal(error.accounts.available,0);
+});
+test('账号额度用完自动切到第二账号，第二账号临时内部错误可补试恢复',async t=>{
+ const f=await fixture(t,{transientSecond:true});const r=await f.post('/v1/chat/completions',{model:'step',messages:[{role:'user',content:'mock'}]});assert.equal(r.status,200);assert.match(await r.text(),/mock recovered/);assert.deepEqual(f.calls,['Bearer A','Bearer B','Bearer B']);
 });

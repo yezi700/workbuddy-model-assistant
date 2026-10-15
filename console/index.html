@@ -1003,7 +1003,7 @@ function acctStatusPill(a) {
   if (!a.enabled) return '<span class="pill">已禁用</span>';
   if (a.exhausted) return '<span class="pill bad">额度耗尽</span>';
   if (a.usable) return `<span class="pill ok">${a.model_limits?.length?'其他模型可尝试':'可尝试'}</span>`;
-  if (a.cooldown_until) return '<span class="pill warn">暂时休息，稍后重试</span>';
+  if (a.cooldown_until) return '<span class="pill warn">调用失败，冷却至 '+esc(new Date(a.cooldown_until).toLocaleTimeString('zh-CN'))+'</span>';
   return '<span class="pill warn">不可用</span>';
 }
 
@@ -1011,8 +1011,10 @@ function renderAccounts() {
   if (!STATE) return;
   $('accountCards').innerHTML = '<p class="hint" style="grid-column:1/-1">国内版WorkBuddy和国际版WorkBuddy AI分别登录、分别确认额度与免费活动。模型目录持续显示；未登录渠道暂不可调用。</p>' + STATE.sites.map((s) => {
     const accounts = s.accounts || [];
+    const selectedModel = (STATE.default_model || '').split('/').at(-1);
+    const modelAvailable = accounts.filter(a=>a.usable && !a.model_limits?.some(l=>l.model===selectedModel && new Date(l.until).getTime()>Date.now())).length;
     const 概览 = accounts.length
-      ? `${accounts.length} 个账号，${s.account_usable || 0} 个可用`
+      ? `${accounts.length} 个账号，${friendlyModel(selectedModel)} 可尝试 ${modelAvailable} 个`
       : '未登录';
     return `
     <div class="card">
@@ -1047,7 +1049,7 @@ function acctRow(site, a) {
         ${a.fail_count ? ` · 连续失败 ${a.fail_count} 次` : ''}
       </div>
       ${a.model_limits?.length ? `<div class="acct-err">${a.model_limits.map(l=>esc(friendlyModel(l.model))+' 免费额度暂不可用，重置于 '+esc(new Date(l.until).toLocaleString('zh-CN'))).join('<br>')}</div>` : ''}
-      ${a.last_error ? `<div class="acct-err" title="${esc(a.last_error)}">${esc(a.last_error.slice(0, 90))}</div>` : ''}
+      ${a.last_error ? `<div class="acct-err" title="${esc(a.last_error)}">${/"code"\s*:\s*10000\b/.test(a.last_error) ? '上游内部错误（10000），不代表额度耗尽；冷却后自动重新参与选择。' : esc(a.last_error.slice(0, 90))}</div>` : ''}
       <div class="acct-ops">
         <button class="btn mini" data-action="rename" data-site="${esc(site)}" data-id="${esc(a.id)}" data-label="${esc(a.label)}">改名</button>
         <button class="btn mini" data-action="toggle" data-site="${esc(site)}" data-id="${esc(a.id)}" data-enabled="${a.enabled ? 'false' : 'true'}">${a.enabled ? '禁用' : '启用'}</button>
