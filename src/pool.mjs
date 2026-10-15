@@ -310,7 +310,7 @@ export function markFailure(site, id, { status = 0, message = '', retryAfterMs =
     a.lastUsedAt = Date.now();
     const reset=model && modelQuotaReset(message);
     if(reset){
-      a.modelLimits={...(a.modelLimits||{}),[model]:{until:reset,reason:String(message).slice(0,200)}};
+      a.modelLimits={...(a.modelLimits||{}),[model]:{until:reset,reason:String(message).slice(0,200),observedAt:Date.now()}};
       a.cooldownUntil=null;
     } else if (isQuotaError(status, message)) {
       a.exhaustedAt = Date.now();

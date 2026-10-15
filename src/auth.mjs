@@ -2,6 +2,7 @@
 // auth.<site>.pool.json；池为空时自动兼容旧的单账号 auth.<site>.json。
 // 登录通过官方设备授权（OAuth）流程获得，不读取 WorkBuddy 客户端的任何本地文件。
 import fs from 'node:fs';
+import {modelLimitDetails} from './model-quota.mjs';
 import { paths, authPathFor } from './config.mjs';
 import { refreshHeaders } from './headers.mjs';
 import { log, warn, stamp } from './log.mjs';
@@ -312,7 +313,7 @@ export function accountSnapshot(site) {
     exhausted: Boolean(a.exhaustedAt && Date.now()-a.exhaustedAt<EXHAUST_TTL_MS),
     exhausted_at: a.exhaustedAt ? new Date(a.exhaustedAt).toISOString() : null,
     cooldown_until: a.cooldownUntil ? new Date(a.cooldownUntil).toISOString() : null,
-    model_limits:Object.entries(a.modelLimits||{}).filter(([,l])=>Number.isFinite(l?.until)&&l.until>Date.now()).map(([model,l])=>({model,until:new Date(l.until).toISOString()})),
+    model_limits:Object.entries(a.modelLimits||{}).filter(([,l])=>Number.isFinite(l?.until)&&l.until>Date.now()).map(([model,l])=>({model,until:new Date(l.until).toISOString(),...modelLimitDetails(l.reason,l.until),observed_at:l.observedAt?new Date(l.observedAt).toISOString():null})),
     fail_count: a.failCount || 0,
     last_error: a.lastError || null,
     last_error_at: a.lastErrorAt ? new Date(a.lastErrorAt).toISOString() : null,

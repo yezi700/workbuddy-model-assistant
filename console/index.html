@@ -1001,15 +1001,19 @@ async function pollLogs() {
 // ---------- 账号（号池） ----------
 function acctStatusPill(a) {
   if (!a.enabled) return '<span class="pill">已禁用</span>';
-  if (a.exhausted) return '<span class="pill bad">额度耗尽</span>';
-  if (a.usable) return `<span class="pill ok">${a.model_limits?.length?'其他模型可尝试':'可尝试'}</span>`;
-  if (a.cooldown_until) return '<span class="pill warn">调用失败，冷却至 '+esc(new Date(a.cooldown_until).toLocaleTimeString('zh-CN'))+'</span>';
+  if (a.exhausted) return '<span class="pill bad">上次调用提示额度不足</span>';
+  if (a.usable) {
+    const model=(STATE?.default_model||'').split('/').at(-1);
+    const limited=a.model_limits?.some(l=>l.model===model && new Date(l.until).getTime()>Date.now());
+    return limited?'<span class="pill warn">当前模型受限</span>':'<span class="pill ok" title="没有有效的本地限制记录，不代表已验证剩余额度或调用成功">可尝试（额度未核实）</span>';
+  }
+  if (a.cooldown_until) return '<span class="pill warn">调用失败，冷却至 '+esc(new Date(a.cooldown_until).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai'}))+'</span>';
   return '<span class="pill warn">不可用</span>';
 }
 
 function renderAccounts() {
   if (!STATE) return;
-  $('accountCards').innerHTML = '<p class="hint" style="grid-column:1/-1">国内版WorkBuddy和国际版WorkBuddy AI分别登录、分别确认额度与免费活动。模型目录持续显示；未登录渠道暂不可调用。</p>' + STATE.sites.map((s) => {
+  $('accountCards').innerHTML = '<p class="hint" style="grid-column:1/-1">状态来自最近调用与本地限制记录，不是实时剩余额度。「可尝试」仅表示未被本地暂停，不保证调用成功。「刷新余额」查询账号积分，不能确认各模型免费次数。以下时间均为北京时间；渠道分别登录、分别确认免费活动。</p>' + STATE.sites.map((s) => {
     const accounts = s.accounts || [];
     const selectedModel = (STATE.default_model || '').split('/').at(-1);
     const modelAvailable = accounts.filter(a=>a.usable && !a.model_limits?.some(l=>l.model===selectedModel && new Date(l.until).getTime()>Date.now())).length;
@@ -1048,12 +1052,12 @@ function acctRow(site, a) {
         uid ${esc(String(a.uid || '').slice(0, 8))}… · 余额 ${余额} · token 至 ${esc(到期)}
         ${a.fail_count ? ` · 连续失败 ${a.fail_count} 次` : ''}
       </div>
-      ${a.model_limits?.length ? `<div class="acct-err">${a.model_limits.map(l=>esc(friendlyModel(l.model))+' 免费额度暂不可用，重置于 '+esc(new Date(l.until).toLocaleString('zh-CN'))).join('<br>')}</div>` : ''}
-      ${a.last_error ? `<div class="acct-err" title="${esc(a.last_error)}">${/"code"\s*:\s*10000\b/.test(a.last_error) ? '上游内部错误（10000），不代表额度耗尽；冷却后自动重新参与选择。' : esc(a.last_error.slice(0, 90))}</div>` : ''}
+      ${a.model_limits?.length ? `<div class="acct-err">${a.model_limits.map(l=>esc(friendlyModel(l.model))+(l.kind==='free_quota'?'：上次调用提示免费额度不足':'：上次调用提示使用受限')+'<br>'+ (l.reset_source==='upstream'?'上游提示重置时间：':'本地暂避至（非官方重置时间）：')+esc(new Date(l.until).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}))+(l.observed_at?' · 记录于 '+esc(new Date(l.observed_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})):'')+'；到时重新参与选择，实际可用性以调用结果为准。').join('<br>')}</div>` : ''}
+      ${a.last_error ? `<details class="acct-err"><summary>最近失败记录${a.last_error_at?' · '+esc(new Date(a.last_error_at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})):''}（展开）</summary><div>${/"code"\s*:\s*10000\b/.test(a.last_error) ? '上游内部错误（10000），不代表额度耗尽；冷却后自动重新参与选择。' : esc(a.last_error)}</div></details>` : ''}
       <div class="acct-ops">
         <button class="btn mini" data-action="rename" data-site="${esc(site)}" data-id="${esc(a.id)}" data-label="${esc(a.label)}">改名</button>
         <button class="btn mini" data-action="toggle" data-site="${esc(site)}" data-id="${esc(a.id)}" data-enabled="${a.enabled ? 'false' : 'true'}">${a.enabled ? '禁用' : '启用'}</button>
-        ${(a.exhausted || a.fail_count) ? `<button class="btn mini" data-action="reset" data-site="${esc(site)}" data-id="${esc(a.id)}">重置状态</button>` : ''}
+        ${(a.exhausted || a.fail_count) ? `<button class="btn mini" data-action="reset" data-site="${esc(site)}" data-id="${esc(a.id)}" title="仅清除本地失败和限制记录，不会恢复官方额度">重置本地状态</button>` : ''}
         <button class="btn mini danger" data-action="remove" data-site="${esc(site)}" data-id="${esc(a.id)}" data-label="${esc(a.label)}">删除</button>
       </div>
     </div>`;

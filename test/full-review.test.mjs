@@ -15,6 +15,7 @@ test('日额度只暂停指定模型，重置后自动恢复；账号健康快�
  fs.writeFileSync(path.join(dir,'auth.cn-cli.pool.json'),JSON.stringify({accounts:[{id:'A',enabled:true,accessToken:'mock'},{id:'B',enabled:true,accessToken:'mock',exhaustedAt:Date.now()-7*3600000}]}));
  markFailure('cn-cli','A',{status:429,message:'免费额度已用完',model:'step'});
  const a=getAccount('cn-cli','A');assert.ok(activeModelLimit(a,'step'));assert.equal(isUsable(a,Date.now(),'step'),false);assert.equal(isUsable(a,Date.now(),'other'),true);
+ const displayed=accountSnapshot('cn-cli').find(a=>a.id==='A').model_limits[0];assert.equal(displayed.kind,'free_quota');assert.equal(displayed.reset_source,'local');assert.ok(Number.isFinite(Date.parse(displayed.observed_at)));
  assert.equal(pickAccount('cn-cli',{model:'step',fallback:true}).id,'B');assert.equal(isUsable(a,a.modelLimits.step.until+1,'step'),true);
  assert.equal(accountSnapshot('cn-cli').find(a=>a.id==='B').exhausted,false);
  resetAccountState('cn-cli','A');assert.equal(activeModelLimit(getAccount('cn-cli','A'),'step'),null);
